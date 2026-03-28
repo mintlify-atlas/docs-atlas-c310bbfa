@@ -1,0 +1,197 @@
+---
+title: "Docker deployment"
+description: "Run ik_llama.cpp in a Docker or Podman container"
+---
+
+<Warning>
+  The Docker images listed in this repository (`ghcr.io/ggerganov/llama.cpp:*`) are inherited from the upstream `llama.cpp` fork and have never been updated for `ik_llama.cpp`. They are outdated and will not include `ik_llama.cpp`-specific features, quantisation types, or performance improvements. Build your own image from the Dockerfiles in `.devops/` to get `ik_llama.cpp` functionality.
+</Warning>
+
+The recommended path for containerised deployment is to use the **community-maintained Containerfiles** bundled in the `docker/` directory of this repository, which include [llama-swap](https://github.com/mostlygeek/llama-swap) for model management and support both CPU and CUDA targets.
+
+## Community build: llama-swap + Podman/Docker
+
+The `docker/` directory contains ready-to-use Containerfiles and `llama-swap` config files for CPU and CUDA:
+
+```
+docker/
+├── ik_llama-cpu.Containerfile
+├── ik_llama-cpu-swap.config.yaml
+├── ik_llama-cuda.Containerfile
+└── ik_llama-cuda-swap.config.yaml
+```
+
+Download those four files to a local directory (for example `~/ik_llama/`), then follow the steps below.
+
+### Building
+
+<Tabs>
+  <Tab title="CPU">
+    ```bash
+    # Podman
+    podman image build --format Dockerfile \
+      --file ik_llama-cpu.Containerfile --target full --tag ik_llama-cpu:full
+    podman image build --format Dockerfile \
+      --file ik_llama-cpu.Containerfile --target swap --tag ik_llama-cpu:swap
+
+    # Docker
+    docker image build --file ik_llama-cpu.Containerfile --target full --tag ik_llama-cpu:full .
+    docker image build --file ik_llama-cpu.Containerfile --target swap --tag ik_llama-cpu:swap .
+    ```
+  </Tab>
+  <Tab title="CUDA">
+    Before building, open `ik_llama-cuda.Containerfile` and set `CUDA_DOCKER_ARCH` to match your GPU:
+
+    | GPU generation | `CUDA_DOCKER_ARCH` |
+    |---|---|
+    | RTX 30xx (Ampere) | `86` |
+    | RTX 40xx (Ada) | `89` |
+    | RTX 50xx (Blackwell) | `120` |
+
+    Also update `CUDA_VERSION` to match your installed CUDA Toolkit (for example `CUDA_VERSION=13.1` for RTX 50xx).
+
+    ```bash
+    # Podman
+    podman image build --format Dockerfile \
+      --file ik_llama-cuda.Containerfile --target full --tag ik_llama-cuda:full
+    podman image build --format Dockerfile \
+      --file ik_llama-cuda.Containerfile --target swap --tag ik_llama-cuda:swap
+
+    # Docker
+    docker image build --file ik_llama-cuda.Containerfile --target full --tag ik_llama-cuda:full .
+    docker image build --file ik_llama-cuda.Containerfile --target swap --tag ik_llama-cuda:swap .
+    ```
+  </Tab>
+</Tabs>
+
+The build produces two image tags:
+
+- **`swap`** — includes `llama-swap` and `llama-server` only (recommended for serving)
+- **`full`** — additionally includes `llama-quantize`, `llama-sweep-bench`, `llama-perplexity`, and other utilities
+
+### Running
+
+Map your model directory to `/models` inside the container. The web UI is available at `http://localhost:9292` and the OpenAI-compatible API at `http://localhost:9292/v1`.
+
+<Tabs>
+  <Tab title="CPU">
+    ```bash
+    # Podman
+    podman run -it --name ik_llama --rm \
+      -p 9292:8080 \
+      -v /my_local_files/gguf:/models:ro \
+      localhost/ik_llama-cpu:swap
+
+    # Docker
+    docker run -it --name ik_llama --rm \
+      -p 9292:8080 \
+      -v /my_local_files/gguf:/models:ro \
+      ik_llama-cpu:swap
+    ```
+  </Tab>
+  <Tab title="CUDA">
+    Install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) (Docker) or [CDI Container Device Interface](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/cdi-support.html) (Podman) on the host first.
+
+    ```bash
+    # Podman
+    podman run -it --name ik_llama --rm \
+      -p 9292:8080 \
+      -v /my_local_files/gguf:/models:ro \
+      --device nvidia.com/gpu=all \
+      --security-opt=label=disable \
+      localhost/ik_llama-cuda:swap
+
+    # Docker
+    docker run -it --name ik_llama --rm \
+      -p 9292:8080 \
+      -v /my_local_files/gguf:/models:ro \
+      --runtime nvidia \
+      ik_llama-cuda:swap
+    ```
+  </Tab>
+</Tabs>
+
+To run in the background, replace `-it` with `-d`. Stop the container with `podman stop ik_llama` or `docker stop ik_llama`.
+
+## Building your own image from `.devops/`
+
+If you need more control, you can build directly from the upstream-inherited Dockerfiles in `.devops/`:
+
+```bash
+# Server with CUDA support
+docker build -t local/llama.cpp:server-cuda -f .devops/llama-server-cuda.Dockerfile .
+
+# Full image with utilities (CUDA)
+docker build -t local/llama.cpp:full-cuda -f .devops/full-cuda.Dockerfile .
+
+# CLI only (CUDA)
+docker build -t local/llama.cpp:light-cuda -f .devops/llama-cli-cuda.Dockerfile .
+```
+
+The default build args are `CUDA_VERSION=11.7.1` and `CUDA_DOCKER_ARCH=all`. Override them to match your environment:
+
+```bash
+docker build \
+  --build-arg CUDA_VERSION=12.4.0 \
+  --build-arg CUDA_DOCKER_ARCH=89 \
+  -t local/llama.cpp:server-cuda \
+  -f .devops/llama-server-cuda.Dockerfile .
+```
+
+### Running with GPU passthrough
+
+Requires [nvidia-container-toolkit](https://github.com/NVIDIA/nvidia-container-toolkit) installed on the host.
+
+```bash
+docker run --gpus all \
+  -v /path/to/models:/models \
+  -p 8000:8000 \
+  local/llama.cpp:server-cuda \
+  -m /models/model.gguf \
+  --port 8000 --host 0.0.0.0 \
+  -n 512 \
+  --n-gpu-layers 999
+```
+
+Pass `--n-gpu-layers 999` (or `-ngl 999`) to offload the entire model to VRAM. See the [performance tips](/deployment/performance-tips) page for guidance on choosing the right value.
+
+## GPU selection
+
+Use the `CUDA_VISIBLE_DEVICES` environment variable to restrict which GPUs the container uses:
+
+```bash
+# Use only the first and third GPU
+CUDA_VISIBLE_DEVICES=0,2 docker run --gpus all \
+  -v /path/to/models:/models \
+  local/llama.cpp:server-cuda \
+  -m /models/model.gguf -ngl 999
+```
+
+## Pinning to a specific commit
+
+To build a community image from a specific `ik_llama.cpp` commit, pass `CUSTOM_COMMIT`:
+
+```bash
+docker image build \
+  --file ik_llama-cuda.Containerfile \
+  --target full \
+  --build-arg CUSTOM_COMMIT="1ec12b8" \
+  --tag ik_llama-cuda-1ec12b8:full .
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="CUDA is not detected inside the container">
+    Make sure the NVIDIA Container Toolkit (Docker) or CDI (Podman) is installed and the host drivers match the CUDA version baked into the image. If CUDA is unavailable, fall back to the `ik_llama-cpu` image.
+  </Accordion>
+  <Accordion title="Models are not found">
+    Verify the host path in your `-v` flag points to the directory that actually contains your `.gguf` files. Inside the container the path must be `/models`.
+  </Accordion>
+  <Accordion title="Build fails on a machine with a different CPU">
+    The Containerfiles default to `-DGGML_NATIVE=ON`, which optimises for the build machine's CPU. If you are building on a different machine from where you will run the container, change that flag to `-DGGML_NATIVE=OFF` in the Containerfile before building.
+  </Accordion>
+  <Accordion title="Old CUDA images accumulate and use disk space">
+    List images with `docker image ls` and remove unused base images such as `docker.io/nvidia/cuda:12.4.0-devel-ubuntu22.04` with `docker image rm`.
+  </Accordion>
+</AccordionGroup>

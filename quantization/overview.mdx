@@ -1,0 +1,70 @@
+---
+title: "Quantization overview"
+description: "Understanding quantization types in ik_llama.cpp: IQK, Trellis, legacy k-quants, and more"
+---
+
+Quantization reduces model weights from full-precision floats to lower-bit representations. This makes it possible to run large models in limited memory and increases inference speed by reducing the amount of data that must be moved and computed on.
+
+## Quantization families
+
+ik_llama.cpp supports several quantization families:
+
+| Family | Examples | Notes |
+|---|---|---|
+| Legacy | `Q4_0`, `Q5_0`, `Q8_0` | Inherited from llama.cpp; broad compatibility |
+| K-quants | `Q4_K`, `Q5_K`, `Q6_K` | Block-based quantization with improved quality over legacy |
+| IQK quants | `IQ2_K` through `IQ6_K` | State-of-the-art formats exclusive to ik_llama.cpp |
+| Trellis quants | `IQ1_KT` through `IQ4_KT` | Novel integer trellis; extreme compression at low BPW |
+| MXFP4 | — | As used in gpt-oss models; supported on Zen4, AVX2, ARM NEON, Metal, CUDA |
+
+## Quality ladder
+
+Lower bits per weight (BPW) means a smaller file but more quality loss. Use this as a reference when choosing a quant for your use case:
+
+| Quant | Notes |
+|---|---|
+| `BF16` | Full precision reference. Too large for most inference workloads. |
+| `Q8_0` | Near-lossless; roughly half the size of BF16. Good starting point. |
+| `Q6_0` | Very close quality to Q8_0. Below this level, using an imatrix is recommended. |
+| `IQ5_K` | Close to Q8_0 quality at a smaller size. |
+| `IQ4_XS` / `IQ4_KS` | Minimal quality loss. A practical default for many models. |
+| `IQ3_K` | From here, IQK quants make the model still usable at significant size reduction. |
+| `IQ2_K` | Aggressive compression; usable with a good imatrix. |
+| `IQ2_KS` | Slightly more compressed than IQ2_K. |
+| `IQ2_XXS` | Extreme compression; quality depends heavily on the model and imatrix. |
+
+<Tip>
+To verify whether an imatrix was applied to a downloaded model, inspect its metadata for `quantize.imatrix.*` fields.
+</Tip>
+
+## Importance matrix (imatrix)
+
+An imatrix is calibration data generated from a sample text corpus. It guides the quantizer to allocate precision where it matters most, reducing quality loss at every bit level.
+
+imatrix is supported for all quant types **except bitnet**. For quants below `Q6_0`, using an imatrix is strongly recommended.
+
+See the [imatrix guide](/quantization/imatrix) for instructions on generating and using one.
+
+## How to pick a quant
+
+1. **Start from memory constraints.** Find the largest quant that fits in your VRAM (or RAM for CPU-only inference). Use `-ngl 999` to attempt a full GPU load and lower the layer count if you run out of memory.
+
+2. **Prioritise quality within that constraint.** Prefer IQK quants over legacy quants at the same BPW — they provide better quality for the same file size.
+
+3. **Use an imatrix.** For any quant below `Q6_0`, always pass `--imatrix` when quantizing to meaningfully reduce quality loss.
+
+4. **Consider R4 variants on CPU.** IQK `_R4` types use row-interleaved packing for better CPU throughput. Pass `-rtr` at runtime to repack on the fly if you have a non-R4 file.
+
+## Further reading
+
+<CardGroup cols={3}>
+  <Card title="IQK quantization types" icon="layer-group" href="/quantization/iqk-quants">
+    State-of-the-art IQK formats: IQ2_K through IQ6_K, R4 variants, MXFP4, and custom quant mixes.
+  </Card>
+  <Card title="Trellis quantization" icon="minimize" href="/quantization/trellis-quants">
+    IQ1_KT through IQ4_KT: extreme compression using a novel integer trellis.
+  </Card>
+  <Card title="Importance matrix" icon="sliders" href="/quantization/imatrix">
+    Generate and apply an imatrix to improve quality at any bit level.
+  </Card>
+</CardGroup>

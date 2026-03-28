@@ -1,0 +1,89 @@
+---
+title: "Importance matrix (imatrix)"
+description: "Generate and use importance matrices to improve quantization quality"
+---
+
+An importance matrix (imatrix) is calibration data derived by running a model over a representative text corpus. It records which weights matter most for accurate predictions, and the quantizer uses this information to allocate precision where it reduces the most loss.
+
+imatrix is supported for all quant types **except bitnet**. Its effect is most significant at lower bit levels — for quants below `Q6_0`, using an imatrix is strongly recommended.
+
+## Generating an imatrix
+
+<Steps>
+  <Step title="Prepare a calibration dataset">
+    You need a plain-text file containing representative text. A common choice is a deduplicated sample from the same domain the model will be used on.
+  </Step>
+  <Step title="Run llama-imatrix">
+    ```bash
+    llama-imatrix \
+      -m model-bf16.gguf \
+      -f calibration_data.txt \
+      -o model.imatrix
+    ```
+    Run from a BF16 or F16 source model for the most accurate importance values.
+  </Step>
+</Steps>
+
+## Options
+
+### --layer-similarity
+
+Collect cosine-similarity statistics that measure how much each layer changes its activations:
+
+```bash
+llama-imatrix \
+  -m model-bf16.gguf \
+  -f calibration_data.txt \
+  -o model.imatrix \
+  --layer-similarity
+```
+
+This produces additional diagnostic output useful for understanding which layers are most sensitive to quantization.
+
+### --hide-imatrix
+
+Obscure the imatrix provenance in the output file. When this flag is set, `llama-imatrix` stores `top_secret` in the data file name and calibration dataset fields, and writes zeros for the batch size and number of chunks:
+
+```bash
+llama-imatrix \
+  -m model-bf16.gguf \
+  -f calibration_data.txt \
+  -o model.imatrix \
+  --hide-imatrix
+```
+
+## Using an imatrix when quantizing
+
+Pass `--imatrix` to `llama-quantize`:
+
+```bash
+llama-quantize \
+  --imatrix model.imatrix \
+  model-bf16.gguf \
+  output.gguf \
+  IQ4_KS
+```
+
+Always include `--imatrix` for best quality results. Omitting it on quants below `Q6_0` will noticeably degrade output quality.
+
+## Converting GGUF imatrix files
+
+Some imatrix files are distributed in the newer GGUF format rather than the `.dat` format used by ik_llama.cpp. Convert them with the included script:
+
+```bash
+python3 convert_imatrix_gguf_to_dat.py
+```
+
+## Verifying imatrix usage
+
+To confirm that a downloaded GGUF was quantized with an imatrix, inspect its metadata. Look for fields with the `quantize.imatrix.*` prefix — their presence confirms an imatrix was applied during quantization.
+
+You can view metadata with `gguf_dump.py`:
+
+```bash
+python3 gguf-py/scripts/gguf_dump.py model.gguf
+```
+
+<Tip>
+When loading a model, the server logs show the quant types per tensor. Combined with the imatrix metadata check, this confirms both what was quantized and how.
+</Tip>

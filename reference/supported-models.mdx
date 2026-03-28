@@ -1,0 +1,36 @@
+---
+title: "Supported models"
+description: "Model families supported by ik_llama.cpp"
+---
+
+The following model families are supported. Download `.gguf` files from HuggingFace and pass them to `--model`.
+
+| Model | Notes |
+| --- | --- |
+| LLaMA-4 | Vision and text variants |
+| LLaMA-3-Nemotron | NVIDIA reasoning model |
+| Qwen3 | Dense and instruct variants |
+| Qwen3-VL | Vision-language variant |
+| Qwen3-Next | Recurrent hybrid; use `--ctx-checkpoints` |
+| Qwen3.5-MoE | MoE variant; use `--ctx-checkpoints` |
+| GLM-4 / 4.5 / 5 | Includes AIR, Flash, and MoE sub-variants |
+| Command-A | Cohere Command-A |
+| BitNet b1.58 | 1-bit quantization natively supported |
+| DeepSeek-V3 / R1 | MLA-based MoE models |
+| Gemma 3 | Google Gemma 3 family |
+| Kimi-2 | Moonshot Kimi-2 |
+| grok-2 | xAI grok-2 |
+| SmolLM3 | HuggingFace compact model |
+| ministral3 | Mistral 3B |
+| Hunyuan | Tencent Hunyuan |
+
+<Note>
+  DeepSeek-V3 and DeepSeek-R1 use Multi-head Latent Attention (MLA). Pass `-mla 3`
+  (the default) for best performance. Lower values reduce memory use at a speed cost.
+</Note>
+
+<Warning>
+  Do not use Unsloth models with `_XL` in their name that contain `f16` tensors.
+  These models are incompatible with ik_llama.cpp. Unsloth `_XL` models that do
+  not use `f16` tensors are fine.
+</Warning>

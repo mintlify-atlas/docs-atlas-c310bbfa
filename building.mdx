@@ -1,0 +1,401 @@
+---
+title: "Building from source"
+description: "Build ik_llama.cpp for CPU, CUDA, Metal, ROCm, and other backends"
+---
+
+`ik_llama.cpp` has a minimal set of dependencies: `cmake`, a C++17-capable compiler, and — for GPU builds — the CUDA toolkit. All are available from the system package manager on Linux.
+
+<Warning>
+  The only fully supported and performant backends are **CPU** (AVX2/ARM NEON) and **CUDA**. Metal, ROCm/hipBLAS, and Vulkan are inherited from the llama.cpp upstream but are **not actively maintained** in this fork. Issues with those backends will only be resolved if contributors step up to fix them.
+</Warning>
+
+## Prerequisites
+
+<Tabs>
+  <Tab title="Linux (Debian/Ubuntu)">
+    ```bash
+    apt-get update && apt-get install \
+      build-essential git cmake \
+      libcurl4-openssl-dev curl libgomp1
+    ```
+  </Tab>
+  <Tab title="macOS">
+    Install Xcode command-line tools and CMake:
+
+    ```bash
+    xcode-select --install
+    brew install cmake
+    ```
+  </Tab>
+  <Tab title="Windows">
+    See the [Windows build instructions](#windows) below. You need Visual Studio Build Tools 2022 and optionally the CUDA Toolkit.
+  </Tab>
+  <Tab title="FreeBSD">
+    ```bash
+    sudo pkg install gmake automake autoconf pkgconf llvm15 openblas
+    ```
+  </Tab>
+</Tabs>
+
+**Get the source:**
+
+```bash
+git clone https://github.com/ikawrakow/ik_llama.cpp
+cd ik_llama.cpp
+```
+
+## CMake build
+
+CMake is the recommended build method on all platforms.
+
+<Tabs>
+  <Tab title="CPU-only (Linux/macOS)">
+    ```bash
+    cmake -B build -DGGML_NATIVE=ON
+    cmake --build build --config Release -j$(nproc)
+    ```
+
+    On macOS, Metal is enabled by default. To disable it:
+
+    ```bash
+    cmake -B build -DGGML_NATIVE=ON -DGGML_METAL=OFF
+    cmake --build build --config Release -j$(nproc)
+    ```
+  </Tab>
+
+  <Tab title="CUDA (Nvidia GPU)">
+    Install the [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) first (`apt install nvidia-cuda-toolkit` works on Ubuntu).
+
+    ```bash
+    cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON
+    cmake --build build --config Release -j$(nproc)
+    ```
+
+    To compile only for a specific GPU compute capability (recommended — reduces compile time significantly):
+
+    ```bash
+    # Ampere (RTX 30xx): 86
+    # Ada Lovelace (RTX 40xx): 89
+    cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86
+    cmake --build build --config Release -j$(nproc)
+    ```
+
+    Use `CUDA_VISIBLE_DEVICES` to select which GPU(s) to use at runtime. Set `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1` to allow swapping to system RAM when VRAM is exhausted (Linux only; on Windows use the NVIDIA Control Panel setting "System Memory Fallback").
+  </Tab>
+
+  <Tab title="Metal (macOS)">
+    Metal is **enabled by default** on macOS. No extra flags are needed:
+
+    ```bash
+    cmake -B build
+    cmake --build build --config Release
+    ```
+
+    To disable GPU inference at runtime without recompiling:
+
+    ```bash
+    ./build/bin/llama-server --model model.gguf -ngl 0
+    ```
+
+    <Warning>
+      The Metal backend is not actively maintained in `ik_llama.cpp`. For best performance on Apple Silicon, the CPU backend with ARM NEON kernels is well-optimised and recommended.
+    </Warning>
+  </Tab>
+
+  <Tab title="Windows (x64)">
+    See the detailed [Windows build walkthrough](#windows) section below.
+  </Tab>
+
+  <Tab title="Android / ARM">
+    `ik_llama.cpp` builds and runs on Android via Termux. For step-by-step instructions, see the [Android deployment guide](/deployment/android).
+
+    On Windows ARM64 (WoA), build with:
+
+    ```bash
+    cmake --preset arm64-windows-llvm-release -D GGML_OPENMP=OFF
+    cmake --build build-arm64-windows-llvm-release
+    ```
+
+    <Note>
+      MSVC does not support the inline ARM assembly used in accelerated kernels (e.g. `Q4_0_4_8`). Use the LLVM/clang preset for best performance on ARM.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Important CMake flags
+
+<AccordionGroup>
+  <Accordion title="-DGGML_NATIVE=ON">
+    Detects your CPU's feature set at compile time (AVX2, AVX-512, ARM NEON, etc.) and generates optimised code for it. Highly recommended for local builds. Omit this flag if you need a portable binary that runs on older CPUs.
+  </Accordion>
+
+  <Accordion title="-DGGML_CUDA=ON">
+    Enables the CUDA backend for Nvidia GPU acceleration. Requires the CUDA Toolkit to be installed.
+  </Accordion>
+
+  <Accordion title="-DCMAKE_CUDA_ARCHITECTURES=&lt;arch&gt;">
+    Limits CUDA compilation to specific GPU compute capabilities, dramatically reducing build time. Common values:
+
+    | GPU generation | Compute capability |
+    |---|---|
+    | Turing (RTX 20xx) | `75` |
+    | Ampere (RTX 30xx / A100) | `80`, `86` |
+    | Ada Lovelace (RTX 40xx) | `89` |
+    | Hopper (H100) | `90` |
+
+    Example: `-DCMAKE_CUDA_ARCHITECTURES=86`
+  </Accordion>
+
+  <Accordion title="-DGGML_IQK_FA_ALL_QUANTS=ON">
+    Compiles support for all KV cache quantization type combinations in the Flash Attention CUDA kernels. Enables more fine-grained control over KV cache size (e.g. using `IQ4_K` for K-cache and `IQ3_K` for V-cache together with Flash Attention). Significantly increases compilation time.
+  </Accordion>
+
+  <Accordion title="-DGGML_RPC=ON">
+    Enables the RPC backend, which allows offloading compute to a remote machine. Useful in distributed or heterogeneous multi-machine setups.
+  </Accordion>
+
+  <Accordion title="-DGGML_NCCL=OFF">
+    Disables NCCL (NVIDIA Collective Communications Library) support. NCCL is off by default; set this explicitly if your environment has NCCL installed and you want to avoid linking it.
+  </Accordion>
+
+  <Accordion title="-DLLAMA_SERVER_SQLITE3=ON">
+    Enables SQLite3 support in `llama-server`, required for the [mikupad](https://github.com/lmg-anon/mikupad) alternative web UI. Make sure `libsqlite3-dev` (or equivalent) is installed before configuring.
+  </Accordion>
+
+  <Accordion title="Debug builds">
+    For single-config generators (default on Linux/macOS):
+
+    ```bash
+    cmake -B build -DCMAKE_BUILD_TYPE=Debug
+    cmake --build build
+    ```
+
+    For multi-config generators (Visual Studio, Xcode):
+
+    ```bash
+    cmake -B build -G "Xcode"
+    cmake --build build --config Debug
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Windows build
+
+The following is a step-by-step walkthrough for a successful Windows CUDA build using clang-cl via Visual Studio Build Tools.
+
+<Steps>
+  <Step title="Install CUDA Toolkit and Visual Studio Build Tools">
+    - Download [CUDA 12.6](https://developer.nvidia.com/cuda-downloads) from Nvidia. During installation, select custom setup and uncheck **Driver components** and **PhysX** (not needed in a VM).
+    - Download [Visual Studio Build Tools 2022](https://aka.ms/vs/17/release/vs_buildtools.exe). During setup, go to the **Individual components** tab, search for `clang`, and add the clang-related tools (they are not selected by default).
+  </Step>
+
+  <Step title="Clone the repository">
+    Download [Portable Git](https://git-scm.com/download/win) and clone:
+
+    ```cmd
+    git.exe clone https://github.com/ikawrakow/ik_llama.cpp "C:\Downloads\ik_llama.cpp"
+    cd "C:\Downloads\ik_llama.cpp"
+    ```
+  </Step>
+
+  <Step title="Set up environment variables">
+    ```cmd
+    set VS_DIR=c:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools
+    call "%VS_DIR%\VC\Auxiliary\Build\vcvarsall.bat" x64
+    set LLVM_DIR=c:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/Llvm/x64
+    set CUDA_DIR=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6
+    set "PATH=%LLVM_DIR%/bin;%CUDA_DIR%/bin;%PATH%"
+    ```
+  </Step>
+
+  <Step title="Configure with CMake">
+    Adjust `-DCMAKE_CUDA_ARCHITECTURES` to match your GPU and `/clang:-march=` to match your CPU:
+
+    ```cmd
+    "c:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" ^
+        -G Ninja ^
+        -S "C:/Downloads/ik_llama.cpp" ^
+        -B "C:/Downloads/output" ^
+        -DCMAKE_C_COMPILER="%LLVM_DIR%/bin/clang-cl.exe" ^
+        -DCMAKE_CXX_COMPILER="%LLVM_DIR%/bin/clang-cl.exe" ^
+        -DCMAKE_CUDA_COMPILER="%CUDA_DIR%/bin/nvcc.exe" ^
+        -DCUDAToolkit_ROOT="%CUDA_DIR%" ^
+        -DCMAKE_CUDA_ARCHITECTURES="89-real" ^
+        -DCMAKE_BUILD_TYPE=Release ^
+        -DGGML_CUDA=ON ^
+        -DLLAMA_CURL=OFF ^
+        -DCMAKE_C_FLAGS="/clang:-march=znver4 /clang:-fvectorize /clang:-ffp-model=fast /clang:-fno-finite-math-only" ^
+        -DCMAKE_CXX_FLAGS="/EHsc /clang:-march=znver4 /clang:-fvectorize /clang:-ffp-model=fast /clang:-fno-finite-math-only" ^
+        -DCMAKE_CUDA_STANDARD=17 ^
+        -DGGML_AVX512=ON ^
+        -DGGML_AVX512_VNNI=ON ^
+        -DGGML_AVX512_VBMI=ON ^
+        -DGGML_CUDA_USE_GRAPHS=ON ^
+        -DGGML_OPENMP=ON
+    ```
+
+    <Note>
+      Use forward slashes (`/`) in all cmake paths on Windows. Backslashes can be misinterpreted by CMake as escape characters.
+    </Note>
+  </Step>
+
+  <Step title="Build">
+    ```cmd
+    "...\CMake\bin\cmake.exe" --build "C:/Downloads/output" --config Release
+    ```
+  </Step>
+
+  <Step title="Copy CUDA runtime DLLs">
+    Copy the following DLLs from `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin` to `C:\Downloads\output\bin`:
+
+    - `cublas64_12.dll`
+    - `cublasLt64_12.dll`
+    - `cudart64_12.dll`
+
+    Also copy `libomp140.x86_64.dll` from `C:\Windows\System32\` to the same output bin directory.
+  </Step>
+</Steps>
+
+## BLAS acceleration
+
+Building with BLAS support can improve prompt processing throughput for large batch sizes (above 32 tokens). It does not affect token generation speed on CPU-only builds.
+
+<AccordionGroup>
+  <Accordion title="OpenBLAS (Linux)">
+    ```bash
+    cmake -B build -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS
+    cmake --build build --config Release
+    ```
+
+    Make sure `libopenblas-dev` (or equivalent) is installed first.
+  </Accordion>
+
+  <Accordion title="Intel oneMKL">
+    Source the oneAPI environment and then build:
+
+    ```bash
+    source /opt/intel/oneapi/setvars.sh
+    cmake -B build \
+      -DGGML_BLAS=ON \
+      -DGGML_BLAS_VENDOR=Intel10_64lp \
+      -DCMAKE_C_COMPILER=icx \
+      -DCMAKE_CXX_COMPILER=icpx \
+      -DGGML_NATIVE=ON
+    cmake --build build --config Release
+    ```
+
+    If you are using the [oneAPI-basekit Docker image](https://hub.docker.com/r/intel/oneapi-basekit), you can skip the `setvars.sh` step.
+  </Accordion>
+
+  <Accordion title="Accelerate Framework (macOS)">
+    Accelerate is enabled by default on macOS — no extra flags are needed. Use the standard CMake build instructions.
+  </Accordion>
+</AccordionGroup>
+
+## hipBLAS / ROCm
+
+<Warning>
+  The ROCm/hipBLAS backend is not actively maintained in `ik_llama.cpp`. Use it at your own risk.
+</Warning>
+
+Install [ROCm](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/tutorial/quick-start.html) first. Then build, specifying your AMD GPU target:
+
+<Tabs>
+  <Tab title="Linux (CMake)">
+    ```bash
+    # Example for gfx1030 (RX 6000 series / RDNA2)
+    HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
+        cmake -S . -B build \
+          -DGGML_HIPBLAS=ON \
+          -DAMDGPU_TARGETS=gfx1030 \
+          -DCMAKE_BUILD_TYPE=Release
+    cmake --build build --config Release -- -j$(nproc)
+    ```
+
+    Find your GPU target with:
+
+    ```bash
+    rocminfo | grep gfx | head -1 | awk '{print $2}'
+    ```
+  </Tab>
+  <Tab title="Windows (CMake)">
+    ```cmd
+    set PATH=%HIP_PATH%\bin;%PATH%
+    cmake -S . -B build -G Ninja ^
+        -DAMDGPU_TARGETS=gfx1100 ^
+        -DGGML_HIPBLAS=ON ^
+        -DCMAKE_C_COMPILER=clang ^
+        -DCMAKE_CXX_COMPILER=clang++ ^
+        -DCMAKE_BUILD_TYPE=Release
+    cmake --build build
+    ```
+
+    `gfx1100` corresponds to the Radeon RX 7900 XTX/XT/GRE (RDNA3). Adjust for your GPU.
+  </Tab>
+</Tabs>
+
+To enable Unified Memory Architecture (UMA) for APUs or integrated GPUs (hurts performance on discrete GPUs):
+
+```bash
+-DGGML_HIP_UMA=ON
+```
+
+The environment variable `HIP_VISIBLE_DEVICES` selects which GPU(s) to use at runtime. If your GPU is not officially supported, try setting `HSA_OVERRIDE_GFX_VERSION` to a similar architecture (e.g. `10.3.0` for RDNA2, `11.0.0` for RDNA3).
+
+## Vulkan
+
+<Warning>
+  The Vulkan backend is not actively maintained in `ik_llama.cpp`. Use it at your own risk.
+</Warning>
+
+<Tabs>
+  <Tab title="Linux (Ubuntu)">
+    Install the Vulkan SDK:
+
+    ```bash
+    wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | apt-key add -
+    wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list \
+        https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+    apt update -y && apt-get install -y vulkan-sdk
+    ```
+
+    Then build:
+
+    ```bash
+    cmake -B build -DGGML_VULKAN=ON
+    cmake --build build --config Release
+    ```
+  </Tab>
+  <Tab title="Windows (MSYS2)">
+    Install dependencies in a UCRT terminal:
+
+    ```bash
+    pacman -S git \
+        mingw-w64-ucrt-x86_64-gcc \
+        mingw-w64-ucrt-x86_64-cmake \
+        mingw-w64-ucrt-x86_64-vulkan-devel \
+        mingw-w64-ucrt-x86_64-shaderc
+    ```
+
+    Build:
+
+    ```bash
+    cmake -B build -DGGML_VULKAN=ON
+    cmake --build build --config Release
+    ```
+  </Tab>
+  <Tab title="Docker">
+    The Docker image handles Vulkan SDK installation automatically:
+
+    ```bash
+    docker build -t llama-cpp-vulkan -f .devops/llama-cli-vulkan.Dockerfile .
+
+    docker run -it --rm \
+        -v "$(pwd):/app:Z" \
+        --device /dev/dri/renderD128:/dev/dri/renderD128 \
+        --device /dev/dri/card1:/dev/dri/card1 \
+        llama-cpp-vulkan \
+        -m "/app/models/model.gguf" -ngl 33
+    ```
+  </Tab>
+</Tabs>

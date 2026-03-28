@@ -1,0 +1,97 @@
+---
+title: "IQK quantization types"
+description: "State-of-the-art IQK quantization formats exclusive to ik_llama.cpp"
+---
+
+IQK quants are a new quantization family developed specifically for ik_llama.cpp. They consistently outperform legacy and k-quants at equivalent bits per weight. Full details of the design are in [Discussion 8](https://github.com/ikawrakow/ik_llama.cpp/discussions/8) in the repository.
+
+## Available types
+
+### Standard IQK types
+
+| Type | Notes |
+|---|---|
+| `IQ2_K` | 2-bit; aggressive compression with good quality when using an imatrix |
+| `IQ2_KS` | Slightly smaller than IQ2_K at similar quality |
+| `IQ2_KL` | Larger 2-bit variant for better quality retention |
+| `IQ3_K` | 3-bit; a practical floor for usable inference quality |
+| `IQ4_K` | 4-bit; balanced quality and size |
+| `IQ4_KS` | 4-bit variant optimised for size |
+| `IQ4_KSS` | More aggressive 4-bit compression |
+| `IQ5_K` | 5-bit; close to Q8_0 quality at a significantly smaller size |
+| `IQ5_KS` | 5-bit variant optimised for size |
+| `IQ6_K` | 6-bit; near-lossless, close to Q8_0 |
+
+### R4 variants (row-interleaved)
+
+R4 types pack weights in an interleaved layout that improves CPU memory access patterns, giving better token-generation throughput on AVX2, Zen4, and ARM NEON.
+
+| Type |
+|---|
+| `IQ2_K_R4` |
+| `IQ3_K_R4` |
+| `IQ4_K_R4` |
+| `IQ4_KS_R4` |
+| `IQ5_K_R4` |
+| `IQ5_KS_R4` |
+
+To use R4 packing at runtime without requantizing, pass the `-rtr` (`--run-time-repack`) flag. This repacks non-R4 tensors on load when an interleaved variant is available.
+
+## MXFP4
+
+MXFP4, as used in gpt-oss models, is supported on Zen4, AVX2, ARM NEON, Metal, and CUDA.
+
+## Quantizing a model
+
+<Steps>
+  <Step title="Prepare a BF16 GGUF">
+    Start from a BF16 base model. Quantizing from a higher-precision source gives the best results.
+  </Step>
+  <Step title="Generate an imatrix (recommended)">
+    See the [imatrix guide](/quantization/imatrix) for the full command. An imatrix is not required but strongly recommended for quants below `Q6_0`.
+  </Step>
+  <Step title="Run llama-quantize">
+    ```bash
+    llama-quantize --imatrix model.imatrix model-bf16.gguf output.gguf IQ4_KS
+    ```
+  </Step>
+</Steps>
+
+## Custom quantization mixes
+
+Real models are not uniform — attention tensors, embedding layers, and FFN experts often benefit from different quantization levels. Use `--custom-q` to apply per-tensor rules via regular expressions:
+
+```bash
+llama-quantize \
+  --imatrix model.imatrix \
+  --custom-q "attn_k=IQ6_K,attn_v=IQ6_K,ffn.*exps=IQ2_KS" \
+  model-bf16.gguf output.gguf IQ4_KS
+```
+
+The base quant (`IQ4_KS` above) applies to all tensors not matched by any regex. Rules are evaluated in the order they are listed; the first match wins.
+
+### Dry run
+
+Before running a full quantization, use `--dry-run` to preview which type each tensor will be assigned, without writing any output file:
+
+```bash
+llama-quantize \
+  --imatrix model.imatrix \
+  --custom-q "attn_k=IQ6_K,attn_v=IQ6_K" \
+  --dry-run \
+  model-bf16.gguf output.gguf IQ4_KS
+```
+
+<Tip>
+Use `--dry-run` to iterate on your `--custom-q` patterns quickly before committing to a long quantization run.
+</Tip>
+
+## Runtime repacking with -rtr
+
+If you have a non-R4 model file but want R4 throughput on CPU, pass `-rtr` when starting the server or CLI:
+
+```bash
+llama-server -m model-IQ4_KS.gguf -rtr
+```
+
+ik_llama.cpp will repack tensors into the interleaved layout at load time when a corresponding R4 variant exists.

@@ -1,0 +1,74 @@
+---
+title: "Introduction"
+description: "What is ik_llama.cpp and how does it differ from llama.cpp?"
+---
+
+`ik_llama.cpp` is a fork of [llama.cpp](https://github.com/ggerganov/llama.cpp) focused on maximising CPU and hybrid GPU/CPU inference performance. It ships new state-of-the-art quantization types, first-class DeepSeek support via FlashMLA, fused MoE operations, and fine-grained tensor placement controls — all while staying compatible with standard GGUF model files.
+
+## Key differences from mainline llama.cpp
+
+<AccordionGroup>
+  <Accordion title="New quantization types: IQK and Trellis">
+    `ik_llama.cpp` introduces two families of novel quantization types not present in mainline llama.cpp:
+
+    **IQK quants** (`IQ2_K`, `IQ3_K`, `IQ4_K`, `IQ5_K`, `IQ6_K`, `IQ4_KS`, `IQ5_KS`, `IQ2_KL`, and `_R4` row-interleaved variants) deliver better quality-per-bit ratios than standard k-quants, with hand-optimised GEMM/GEMV kernels for AVX2, Zen4, ARM NEON, and CUDA.
+
+    **Trellis quants** (`IQ1_KT`, `IQ2_KT`, `IQ3_KT`, `IQ4_KT`) use a novel integer-based trellis structure to achieve strong compression ratios while maintaining reasonable CPU performance.
+  </Accordion>
+
+  <Accordion title="FlashMLA and MLA for DeepSeek models">
+    Multi-head Latent Attention (MLA) is implemented with Flash Attention support (`FlashMLA`), giving significantly faster prompt processing and token generation for DeepSeek-V2/V3/R1 and similar models. FlashMLA-3 is available for both CPU and CUDA (Ampere or newer).
+  </Accordion>
+
+  <Accordion title="Fused MoE operations">
+    Mixture-of-Experts (MoE) layers are computed with fused FFN operations, reducing overhead and improving throughput for models like DeepSeek, Qwen3-MoE, and Command-A.
+  </Accordion>
+
+  <Accordion title="Tensor overrides and hybrid GPU/CPU inference">
+    The `--tensor-override` / `-ot` flag lets you selectively route individual tensors (e.g. large FFN weight blocks) to CPU RAM while keeping attention tensors in VRAM. This enables running large MoE models on setups where VRAM alone is insufficient.
+  </Accordion>
+
+  <Accordion title="Smart Expert Reduction (SER)">
+    SER skips low-activation experts at runtime, reducing compute for MoE models with minimal quality impact — particularly effective for DeepSeek inference.
+  </Accordion>
+
+  <Accordion title="Multi-GPU graph split mode">
+    A new `--split-mode graph` distributes the compute graph across multiple GPUs, complementing the existing `layer` and `row` split modes for better multi-GPU utilisation.
+  </Accordion>
+
+  <Accordion title="Quantization quality improvements">
+    Existing llama.cpp quantization types (`Q2_K` through `Q6_K`, `IQ1_M`, `IQ2_XS`, `IQ4_NL`, etc.) are re-quantized with improved algorithms, producing higher-quality models at the same bit-width.
+  </Accordion>
+</AccordionGroup>
+
+## Supported backends
+
+<Note>
+  The only fully functional and performant compute backends are **CPU** (AVX2 or better, ARM NEON or better) and **CUDA**. ROCm, Vulkan, and Metal are inherited from llama.cpp but are not actively maintained in this fork. Do not open issues for those backends unless you are prepared to contribute a fix.
+</Note>
+
+| Backend | Status | Notes |
+|---------|--------|-------|
+| CPU (x86, AVX2/AVX-512) | Fully supported | Best-in-class kernel optimisations for Zen4, AVX2 |
+| CPU (ARM NEON / Apple Silicon) | Fully supported | Optimised NEON kernels |
+| CUDA (Nvidia) | Fully supported | Ampere or newer recommended for FlashMLA |
+| Metal (macOS) | Limited | Enabled by default on macOS; not actively maintained |
+| ROCm / hipBLAS (AMD) | Limited | Not actively maintained |
+| Vulkan | Limited | Not actively maintained |
+
+## Where to go next
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build and run ik_llama.cpp in minutes on CPU or GPU.
+  </Card>
+  <Card title="Building from source" icon="hammer" href="/building">
+    Detailed build instructions for all platforms and backends.
+  </Card>
+  <Card title="Quantization" icon="layer-group" href="/quantization/overview">
+    Learn about IQK, Trellis, and other quantization types unique to ik_llama.cpp.
+  </Card>
+  <Card title="Supported models" icon="cube" href="/reference/supported-models">
+    Browse the full list of supported model architectures.
+  </Card>
+</CardGroup>

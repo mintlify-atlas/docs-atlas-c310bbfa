@@ -1,0 +1,174 @@
+---
+title: "Performance troubleshooting"
+description: "Diagnose and improve token generation speed"
+---
+
+This page walks through the most common reasons inference is slower than expected and how to address each one.
+
+## Verify the GPU is being used
+
+When you pass `-ngl N` (or `--n-gpu-layers N`), `ik_llama.cpp` prints diagnostic lines before inference starts. Look for the `cublas` offloading lines:
+
+```text
+llama_model_load_internal: [cublas] offloading 60 layers to GPU
+llama_model_load_internal: [cublas] offloading output layer to GPU
+llama_model_load_internal: [cublas] total VRAM used: 17223 MB
+```
+
+If those lines are absent, the GPU is not being used. Check that you built with `-DGGML_CUDA=ON` and that the NVIDIA drivers and CUDA toolkit are installed correctly.
+
+To offload as many layers as possible, pass a large number:
+
+```bash
+./llama-cli -m /path/to/model.gguf -ngl 999 -p "Hello, world"
+```
+
+`ik_llama.cpp` will offload as many layers as fit in VRAM even if you request more than the model has.
+
+<Tip>
+  Use `--fit` to let `ik_llama.cpp` automatically load as many tensors as VRAM allows, without specifying a layer count. Increase `--fit-margin` (default 1024 MiB) if you hit CUDA out-of-memory errors during loading.
+</Tip>
+
+## Set the thread count correctly
+
+The `-t` / `--threads` parameter controls how many CPU threads are used for token generation. Setting it too high is one of the most common causes of slow inference.
+
+If you are unsure, start at `1` and double the value until you stop seeing speed improvements:
+
+| `-t` value | Guidance |
+|---|---|
+| Too high (above physical core count) | CPUs hyperthreads compete for shared execution units; speed falls |
+| Physical core count | Usually optimal for token generation |
+| `1` | A useful baseline — if this is dramatically faster than a higher value, your CPU is being oversaturated |
+
+```bash
+# Start here if TG speed is unexpectedly low
+./llama-cli -m model.gguf -ngl 999 -t 1 -p "Hello"
+
+# Then double until you plateau
+./llama-cli -m model.gguf -ngl 999 -t 4 -p "Hello"
+./llama-cli -m model.gguf -ngl 999 -t 8 -p "Hello"
+```
+
+When doing full GPU offload, batch/prompt-processing threads (`-tb` / `--threads-batch`) can be set lower than generation threads. A value of `2` works well:
+
+```bash
+./llama-server -m model.gguf -ngl 999 -t 8 -tb 2
+```
+
+<Note>
+  Avoid odd thread counts (1, 3, 5, ...) — they can cause uneven work distribution on some CPU architectures.
+</Note>
+
+## Fit the model entirely in VRAM
+
+Token generation speed scales with how much of the model is in VRAM. A model that fits entirely in VRAM (`-ngl 999`) is significantly faster than one partially kept in RAM:
+
+```bash
+./llama-server -m model.gguf -ngl 999
+```
+
+If the model is too large for VRAM, consider:
+
+- Using a lower quantisation (e.g. `IQ4_XS` instead of `Q8_0`)
+- Quantising the KV cache (see below)
+- Using tensor overrides (`-ot`) to keep only the MoE expert tensors in RAM while everything else stays in VRAM
+
+See the [GPU offload](/inference/gpu-offload) page for detailed strategies.
+
+## Flash Attention
+
+Flash Attention (`-fa`) is **enabled by default** in `ik_llama.cpp`. It reduces KV cache memory usage and improves both prompt processing and token generation speed. Do not disable it unless you are debugging a specific problem.
+
+```bash
+./llama-server -m model.gguf -ngl 999 -fa
+```
+
+## Reduce context size
+
+The KV cache grows with context size. Use the smallest context that meets your needs:
+
+```bash
+# Instead of the model maximum (e.g. 128 000 tokens)...
+./llama-server -m model.gguf -c 128000
+
+# ...use only what you need
+./llama-server -m model.gguf -c 4096
+```
+
+A smaller context frees VRAM for additional layers and reduces the memory bandwidth the GPU spends on attention computations.
+
+## Tune the batch sizes
+
+`-ub` / `--ubatch-size` controls the physical batch size used during prompt processing (PP). The default is `512`. Higher values improve GPU PP throughput at the cost of more VRAM:
+
+```bash
+./llama-server -m model.gguf -ngl 999 -ub 1024
+```
+
+The logical batch size `-b` / `--batch-size` (default `2048`) is safe to leave at its default.
+
+## KV cache quantisation
+
+Quantising the KV cache reduces VRAM consumption with minimal quality loss, freeing space to offload more model layers to the GPU:
+
+```bash
+./llama-server -m model.gguf -ngl 999 -ctk q8_0 -ctv q8_0
+```
+
+`q8_0` is a conservative choice that has negligible quality impact on most models. The K-cache may benefit from a slightly higher quant than the V-cache if you notice quality degradation.
+
+<Note>
+  KV quantisation requires Flash Attention (`-fa`), which is on by default. To access additional quantisation types beyond `f16`, `q8_0`, and `q6_0`, build with `-DGGML_IQK_FA_ALL_QUANTS=ON`.
+</Note>
+
+## MoE models: fused MoE and MLA
+
+For Mixture-of-Experts models, the `--fused-moe` (`-fmoe`) flag merges the `ffn_up` and `ffn_gate` projections into a single fused operation. It is **enabled by default**. If you disabled it, re-enable it:
+
+```bash
+./llama-server -m moe-model.gguf -ngl 999 -fmoe
+```
+
+For DeepSeek models (and other MLA-based architectures), combine `-mla 3` with Flash Attention for best performance:
+
+```bash
+./llama-server -m deepseek-model.gguf -ngl 999 -mla 3 -fa
+```
+
+## Benchmarking
+
+Use the bundled benchmark tools to measure the effect of parameter changes before committing to a configuration.
+
+**`llama-sweep-bench`** — runs a series of PP batches followed by TG, reporting tokens/second at different KV cache fill levels. It accepts the same parameters as `llama-server`:
+
+```bash
+llama-sweep-bench -m /models/model.gguf \
+  -c 12288 -ub 512 \
+  -fa -ctk q8_0 -ctv q8_0 \
+  -ngl 999
+```
+
+**`llama-bench`** — targeted microbenchmark for PP and TG:
+
+```bash
+llama-bench -tgb 4,16 -p 512 -n 128 -ngl 999 -m /models/model.gguf
+```
+
+### Example: effect of flags on a 30B model
+
+The following runs were measured on a machine with an A6000 GPU (48 GB VRAM), 7 physical CPU cores, and 32 GB RAM. The model was `Wizard-Vicuna-30B-Uncensored.q4_0.gguf`.
+
+| Flags | Tokens/second |
+|---|---|
+| `-ngl 999` (no thread flag) | < 0.1 |
+| `-t 7` (CPU only) | 1.7 |
+| `-t 1 -ngl 999` | 5.5 |
+| `-t 7 -ngl 999` | 8.7 |
+| `-t 4 -ngl 999` | 9.1 |
+
+Key takeaways from the table:
+
+- GPU offload (`-ngl 999`) alone does almost nothing without setting `-t` — the saturated CPU becomes the bottleneck.
+- Matching `-t` to physical core count (7) is roughly equivalent to using 4, but 4 slightly wins here — experiment for your hardware.
+- Combining GPU offload with the right thread count gives a 5× speed improvement over CPU-only inference.

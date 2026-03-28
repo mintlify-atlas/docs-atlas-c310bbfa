@@ -1,0 +1,59 @@
+---
+title: "Build options"
+description: "CMake flags and environment variables for building ik_llama.cpp"
+---
+
+## Prerequisites
+
+On Debian/Ubuntu:
+
+```bash
+apt-get update && apt-get install build-essential git libcurl4-openssl-dev curl libgomp1 cmake
+```
+
+## CMake flags
+
+Pass flags to the initial `cmake -B build` invocation.
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `GGML_NATIVE` | `OFF` | Optimize for the host CPU (`-march=native`). Turn off when cross-compiling. |
+| `GGML_CUDA` | `OFF` | Build with CUDA support. Requires the NVIDIA CUDA Toolkit. Defaults to native CUDA architecture detection. |
+| `CMAKE_CUDA_ARCHITECTURES` | auto | Target a specific GPU compute capability, e.g. `86` for RTX 30-series. |
+| `GGML_RPC` | `OFF` | Build the RPC backend for distributed inference across machines. |
+| `GGML_IQK_FA_ALL_QUANTS` | `OFF` | Enable all KV cache quantization types for Flash Attention (beyond the default `f16`, `q8_0`, `q6_0`, and `bf16`). |
+| `GGML_NCCL` | `ON` | Enable NCCL for multi-GPU communication. Set to `OFF` to disable. |
+| `LLAMA_SERVER_SQLITE3` | `OFF` | Build SQLite3 support into `llama-server` (required for the mikupad web UI). |
+
+**CPU build example**
+
+```bash
+cmake -B build -DGGML_NATIVE=ON
+cmake --build build --config Release -j$(nproc)
+```
+
+**CUDA build example**
+
+```bash
+cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86
+cmake --build build --config Release -j$(nproc)
+```
+
+## Environment variables
+
+Set these in the shell before invoking `llama-server` or any other tool.
+
+| Variable | Description |
+| --- | --- |
+| `CUDA_VISIBLE_DEVICES` | Restrict which GPUs are visible. Example: `CUDA_VISIBLE_DEVICES=0,2` uses the first and third GPU only. |
+| `GGML_CUDA_ENABLE_UNIFIED_MEMORY` | Set to `1` to enable CUDA Unified Memory, allowing the GPU to access host RAM when VRAM is exhausted. Useful for large models on systems with limited VRAM. |
+
+```bash
+CUDA_VISIBLE_DEVICES=0,2 llama-server --model /models/model.gguf -ngl 999
+```
+
+<Note>
+  The only fully supported compute backends are CPU (AVX2 or better, ARM NEON
+  or better) and CUDA. ROCm, Vulkan, and Metal are available but not actively
+  maintained.
+</Note>

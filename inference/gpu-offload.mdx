@@ -1,0 +1,233 @@
+---
+title: "GPU offloading"
+description: "Configure GPU offloading to maximize inference performance with CUDA"
+---
+
+ik_llama.cpp uses the CPU as its base compute device. "Offloading" means sending specific tensors and operations to the GPU for processing. Because GPUs have faster memory bandwidth and parallel compute compared to CPU+RAM, the goal is to offload as much as possible to maximize tokens/second.
+
+<Tip>
+  For MoE models (DeepSeek, Qwen3-MoE, etc.), always pass a number larger than the model's actual layer count with `-ngl`. Use `-ngl 999` as a safe catch-all — the runtime caps it at the actual layer count automatically.
+</Tip>
+
+## Core offload parameters
+
+### -ngl / --gpu-layers
+
+Offload the first N transformer layers to VRAM. Pass `999` to offload everything:
+
+```bash
+# Offload all layers
+llama-server -m /models/model.gguf -ngl 999
+
+# Partial offload: first 40 of 80 layers
+llama-server -m /models/model.gguf -ngl 40
+```
+
+To find the exact layer count, open the GGUF file on HuggingFace and scroll to the Tensors table, or run:
+
+```bash
+python3 gguf-py/scripts/gguf_dump.py /models/model.gguf
+```
+
+### -ot / --override-tensor
+
+Override where individual tensors are stored using regular expressions. This is the most powerful offload control available, particularly useful for MoE models where you want experts in RAM and everything else in VRAM.
+
+```bash
+# Put all expert tensors (ffn_*_exps) back on CPU
+-ngl 999 -ot "\.ffn_.*_exps\.=CPU"
+
+# Put experts for layers 0-87 on CPU (example for a 94-layer model)
+-ngl 999 -ot "blk.(?:[0-9]|[1-7][0-9]|[8][0-7]).ffn._exps.=CPU"
+```
+
+The pattern before `=` is a regex matched against tensor names. The value after `=` is the target device (`CPU`, `CUDA0`, `CUDA1`, etc.).
+
+<Info>
+  Tensor names follow the pattern `blk.N.tensor_name`. Run `gguf_dump.py` on your model to list all tensor names and identify the right regex pattern.
+</Info>
+
+### --fit / --fit-margin
+
+Automatically load as many tensors as available VRAM permits, without specifying an explicit layer count.
+
+```bash
+# Auto-fit with default 1024 MiB safety margin
+llama-server -m /models/model.gguf --fit
+
+# Larger margin to avoid OOM (e.g. for large KV cache)
+llama-server -m /models/model.gguf --fit --fit-margin 2048
+```
+
+| Parameter | Default | Notes |
+| --- | --- | --- |
+| `--fit` | off | Automatically fills VRAM. Cannot be combined with `--cpu-moe`, `--n-cpu-moe`, or `-ot`. |
+| `--fit-margin N` | 1024 MiB | Increase if you get CUDA OOM during model load. Decrease if too much VRAM is left unused. |
+
+## Multi-GPU configuration
+
+<Tabs>
+  <Tab title="Single GPU">
+    For a single GPU, use `-ngl 999` to fully offload, or a lower number for partial offload:
+
+    ```bash
+    # Full offload to primary GPU
+    llama-server -m /models/model.gguf \
+      -ngl 999 \
+      -fa
+
+    # Partial offload with KV cache in VRAM
+    llama-server -m /models/model.gguf \
+      -ngl 40 \
+      -fa \
+      -ctk q8_0 -ctv q8_0
+    ```
+
+    Use `-mg` to select which GPU to use when multiple are present but you only want one:
+
+    ```bash
+    -mg 1   # Use second GPU (index 1)
+    ```
+  </Tab>
+  <Tab title="Multi-GPU">
+    ik_llama.cpp adds the `graph` split mode, which is highly effective for both dense and MoE models across multiple GPUs — including mixed GPU types with different VRAM sizes.
+
+    ```bash
+    # Graph split across all available GPUs
+    llama-server -m /models/model.gguf \
+      -ngl 999 \
+      -sm graph \
+      -fa
+
+    # Control the fraction each GPU receives
+    llama-server -m /models/model.gguf \
+      -ngl 999 \
+      -sm graph \
+      -ts 3,1          # 75% GPU 0, 25% GPU 1
+    ```
+
+    **Split modes:**
+
+    | Mode | Description |
+    | --- | --- |
+    | `none` | Single GPU only (default) |
+    | `layer` | Distribute layers across GPUs |
+    | `graph` | Distribute computation graph across GPUs. Best for mixed GPU setups. |
+
+    **Inter-GPU transfer type** (`-grt`): controls the data type used when transferring activations between GPUs. Lower precision reduces bandwidth at some quality cost:
+
+    ```bash
+    -grt q8_0   # Smallest transfer, minimal quality loss
+    -grt bf16   # Good balance
+    -grt f16    # Default-equivalent
+    -grt f32    # Full precision
+    ```
+
+    <Warning>
+      If you observe incoherent responses with split mode `graph` and partial offload, add `-cuda graphs=0` to your command line.
+    </Warning>
+
+    **Limit GPU count** with `--max-gpu N` when using more than 2 GPUs actually hurts performance:
+
+    ```bash
+    --max-gpu 2
+    ```
+
+    **Select specific GPUs** with `-dev` or the environment variable:
+
+    ```bash
+    -dev CUDA0,CUDA2
+    # or
+    CUDA_VISIBLE_DEVICES=0,2 llama-server ...
+    ```
+  </Tab>
+</Tabs>
+
+## MoE-specific offload options
+
+For Mixture-of-Experts models, ik_llama.cpp provides dedicated parameters to control where expert weights live:
+
+| Parameter | Description |
+| --- | --- |
+| `--cpu-moe` | Keep **all** MoE expert weights in RAM. Simple one-flag hybrid setup. |
+| `--n-cpu-moe N` | Keep MoE weights of the **first N layers** in RAM. Useful when some VRAM is available. |
+| `-ooae` / `--offload-only-active-experts` | When expert weights are in RAM, only copy the **activated** experts to VRAM for computation (reduces RAM→VRAM transfer). Default: ON. |
+| `-no-ooae` | Disable active-expert-only offload. May help when nearly all experts are activated (large batches). |
+
+## Per-operation offload control
+
+`-op` / `--offload-policy` gives fine-grained control over which GGML operations run on GPU:
+
+```bash
+# Disable all GPU offload
+-op -1,0
+
+# Disable matrix multiplication offload only
+-op 26,0
+
+# Disable indirect matmul (MoE experts) offload
+-op 27,0
+
+# Multiple operations
+-op 26,0,27,0
+```
+
+## CUDA fine-tuning
+
+`-cuda` / `--cuda-params` accepts a comma-separated list of CUDA-specific tuning options, including fusion control, GPU offload threshold, and MMQ-ID threshold:
+
+```bash
+-cuda graphs=0          # Disable CUDA graphs (workaround for graph-split + hybrid issues)
+```
+
+The FP16 precision offset for Flash Attention at long contexts:
+
+```bash
+-cuda fa-offset=1.0     # Fix FP16 overflow in FA for very long contexts
+```
+
+## Practical examples
+
+<CodeGroup>
+
+```bash Full GPU offload
+llama-server \
+  -m /models/Qwen3-8B-Q6_K.gguf \
+  -ngl 999 \
+  -fa \
+  --ctx-size 8192
+```
+
+```bash MoE partial offload (experts on CPU)
+llama-server \
+  -m /models/DeepSeek-V3-IQ4_NL.gguf \
+  -ngl 999 \
+  -ot "\.ffn_.*_exps\.=CPU" \
+  -fa \
+  --ctx-size 4096
+```
+
+```bash Multi-GPU graph split
+llama-server \
+  -m /models/Qwen3-235B-A22B-IQ4_NL.gguf \
+  -ngl 999 \
+  -sm graph \
+  -grt q8_0 \
+  -fa \
+  --ctx-size 4096
+```
+
+```bash Auto-fit with VRAM safety margin
+llama-server \
+  -m /models/model.gguf \
+  --fit \
+  --fit-margin 2048 \
+  -fa
+```
+
+</CodeGroup>
+
+## Related pages
+
+- [Hybrid CPU/GPU inference](/inference/hybrid-cpu-gpu) — Detailed guide for running models that don't fit in VRAM
+- [Parameters reference](/inference/parameters) — Full GPU offload parameter reference

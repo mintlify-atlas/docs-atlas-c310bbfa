@@ -1,0 +1,203 @@
+---
+title: "Running the server"
+description: "Start the llama-server for OpenAI-compatible LLM inference with a built-in WebUI"
+---
+
+`llama-server` is a fast, lightweight HTTP server that provides an OpenAI-compatible REST API for LLM inference. It is built on [httplib](https://github.com/yhirose/cpp-httplib) and exposes a WebUI, parallel decoding, function calling, speculative decoding, and embeddings — all from a single binary.
+
+## What llama-server provides
+
+<CardGroup cols={2}>
+  <Card title="OpenAI-compatible API" icon="plug">
+    Drop-in replacement for the OpenAI REST API. Point any OpenAI client at your local server without code changes.
+  </Card>
+  <Card title="Built-in WebUI" icon="globe">
+    Interact with the model directly in your browser at `http://127.0.0.1:8080`.
+  </Card>
+  <Card title="Parallel decoding" icon="code-branch">
+    Serve multiple users simultaneously with continuous batching and configurable parallel slots.
+  </Card>
+  <Card title="Function calling" icon="code">
+    Tool use for virtually any model via Jinja template support. See the [function calling docs](/features/function-calling).
+  </Card>
+  <Card title="Speculative decoding" icon="bolt">
+    Accelerate token generation using a draft model or ngram-based speculation.
+  </Card>
+  <Card title="Embeddings" icon="diagram-project">
+    Generate text embeddings via the `/v1/embeddings` endpoint for retrieval-augmented workflows.
+  </Card>
+</CardGroup>
+
+## Basic usage
+
+### CPU inference
+
+```bash
+./build/bin/llama-server \
+  --model /path/to/model.gguf \
+  --ctx-size 4096
+```
+
+### GPU inference
+
+Add `-ngl 999` to offload all layers to VRAM:
+
+```bash
+./build/bin/llama-server \
+  --model /path/to/model.gguf \
+  --ctx-size 4096 \
+  -ngl 999
+```
+
+Once the server starts, open [http://127.0.0.1:8080](http://127.0.0.1:8080) in your browser to access the WebUI.
+
+<Note>
+  Never expose the server directly to the internet without authentication. By default the server binds to `127.0.0.1` (localhost only). If you need network access, use `--host 0.0.0.0` together with `--api-key` to require authentication.
+</Note>
+
+## Server options
+
+<AccordionGroup>
+  <Accordion title="--host">
+    **Default:** `127.0.0.1`
+
+    IP address the server listens on. Change to `0.0.0.0` to accept connections from other machines on your network.
+
+    ```bash
+    --host 0.0.0.0
+    ```
+  </Accordion>
+
+  <Accordion title="--port">
+    **Default:** `8080`
+
+    Port the server listens on.
+
+    ```bash
+    --port 9000
+    ```
+  </Accordion>
+
+  <Accordion title="--webui">
+    **Default:** `auto`
+
+    Controls which WebUI to serve. Options:
+
+    | Value | Behaviour |
+    | --- | --- |
+    | `none` | Disable the WebUI entirely |
+    | `auto` | Serve the default WebUI |
+    | `llamacpp` | Serve the classic llama.cpp WebUI |
+
+    ```bash
+    --webui llamacpp
+    ```
+  </Accordion>
+
+  <Accordion title="--api-key">
+    **Default:** none (no authentication)
+
+    Require clients to supply an API key via the `Authorization: Bearer <key>` header.
+
+    ```bash
+    --api-key mysecretkey
+    ```
+  </Accordion>
+
+  <Accordion title="--alias / -a">
+    **Default:** none
+
+    Set the model name alias returned by the API. Useful when a client hard-codes a specific model name.
+
+    ```bash
+    --alias my-model
+    ```
+  </Accordion>
+
+  <Accordion title="--parallel / -np">
+    **Default:** `1`
+
+    Number of parallel decode slots. Enables serving multiple users simultaneously. The total context (`--ctx-size`) is shared across all slots.
+
+    ```bash
+    --parallel 4 --ctx-size 16384
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## API endpoints
+
+### Chat & completions
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `POST` | `/v1/chat/completions` | OpenAI-compatible chat completions |
+| `POST` | `/v1/completions` | Raw text completions |
+| `POST` | `/v1/embeddings` | Text embeddings |
+| `POST` | `/v1/responses` | OpenAI responses API |
+
+### Monitoring
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `GET` | `/health` | Server health check |
+| `GET` | `/props` | Server and model properties |
+| `GET` | `/metrics` | Prometheus-compatible metrics |
+
+## Example: chat completions request
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "my-model",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant."
+      },
+      {
+        "role": "user",
+        "content": "What is the capital of France?"
+      }
+    ],
+    "temperature": 0.7,
+    "max_tokens": 256
+  }'
+```
+
+With an API key:
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer mysecretkey" \
+  -d '{
+    "model": "my-model",
+    "messages": [
+      {"role": "user", "content": "Hello!"}
+    ]
+  }'
+```
+
+## Full startup example
+
+```bash
+./build/bin/llama-server \
+  --model /models/Qwen_Qwen3-30B-A3B-IQ4_NL.gguf \
+  --ctx-size 8192 \
+  --host 0.0.0.0 \
+  --port 8080 \
+  --api-key mysecretkey \
+  --alias qwen3-30b \
+  --parallel 2 \
+  -ngl 999 \
+  -fa \
+  --jinja
+```
+
+## Related pages
+
+- [GPU offloading](/inference/gpu-offload) — Maximize performance with CUDA
+- [Hybrid CPU/GPU inference](/inference/hybrid-cpu-gpu) — Run models larger than VRAM
+- [Parameters reference](/inference/parameters) — Full CLI parameter reference

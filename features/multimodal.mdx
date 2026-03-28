@@ -1,0 +1,135 @@
+---
+title: "Multimodal (vision)"
+description: "Run vision-language models with image input using llama-mtmd-cli and llama-server"
+---
+
+`ik_llama.cpp` supports vision-language models through the `libmtmd` library. You can interact with multimodal models using either the `llama-mtmd-cli` command-line tool or the `llama-server` HTTP API.
+
+<Note>
+  Multimodal support is under **active development** and breaking changes are expected. The server integration is currently marked as a work in progress.
+</Note>
+
+## How it works
+
+Multimodal support works by encoding images into embeddings using a separate model component, then feeding those embeddings into the language model alongside the text prompt. This requires **two GGUF files**:
+
+1. The main language model (`.gguf`)
+2. A **multimodal projector** (`mmproj`) file — handles image encoding and projection into the model's embedding space
+
+The projector file is architecture-specific. See the [examples/mtmd/](https://github.com/ikawrakow/ik_llama.cpp/tree/main/examples/mtmd) directory for model-specific guides.
+
+## Supported models
+
+`ik_llama.cpp` adds support for several vision models on top of the base llama.cpp multimodal stack. Notable additions include:
+
+- **Qwen3-VL** — added in [PR 883](https://github.com/ikawrakow/ik_llama.cpp/pull/883)
+- **Qwen 2 VL / Qwen 2.5 VL**
+- **Gemma 3** (vision variants)
+- **SmolVLM / SmolVLM2**
+- **Pixtral 12B**
+- **Mistral Small 3.1 24B**
+- **InternVL 2.5 / InternVL 3**
+- **LLaVA** (legacy)
+- **MobileVLM** (legacy)
+- **MiniCPM-V 2.5 / 2.6**
+
+## Obtaining the mmproj file
+
+For supported models, you can generate the projector file from the original HuggingFace checkpoint using `convert_hf_to_gguf.py` with the `--mmproj` flag:
+
+```bash
+python convert_hf_to_gguf.py \
+  --model /path/to/hf-model \
+  --mmproj \
+  --outfile /path/to/model-mmproj.gguf
+```
+
+For legacy models (LLaVA, MobileVLM, etc.), refer to the conversion scripts in `tools/mtmd/legacy-models/`.
+
+## Using `llama-mtmd-cli`
+
+`llama-mtmd-cli` is the unified command-line interface for multimodal inference. It replaces the older model-specific binaries (`qwen2vl-cli`, `gemma3-cli`, etc.).
+
+### Basic image query
+
+```bash
+./build/bin/llama-mtmd-cli \
+  --model /path/to/model.gguf \
+  --mmproj /path/to/model-mmproj.gguf \
+  --image /path/to/image.jpg \
+  --prompt "Describe this image."
+```
+
+### Interactive mode
+
+```bash
+./build/bin/llama-mtmd-cli \
+  --model /path/to/model.gguf \
+  --mmproj /path/to/model-mmproj.gguf \
+  -i
+```
+
+In interactive mode, you can pass image paths inline by prefixing them with `img:`:
+
+```
+>>> img:/path/to/photo.jpg
+>>> What is in this image?
+```
+
+### With GPU offload
+
+```bash
+./build/bin/llama-mtmd-cli \
+  --model /path/to/model.gguf \
+  --mmproj /path/to/model-mmproj.gguf \
+  -ngl 999 \
+  --image /path/to/image.jpg \
+  --prompt "What objects are visible?"
+```
+
+## Using `llama-server`
+
+`llama-server` exposes multimodal capabilities through the standard OpenAI-compatible API. Pass both the model and projector files at startup:
+
+```bash
+./build/bin/llama-server \
+  --model /path/to/model.gguf \
+  --mmproj /path/to/model-mmproj.gguf \
+  --ctx-size 4096 \
+  -ngl 999
+```
+
+Then send image data as a base64-encoded string in the `image_url` field of a chat message:
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "vision-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/jpeg;base64,<BASE64_IMAGE_DATA>"
+            }
+          },
+          {
+            "type": "text",
+            "text": "What is in this image?"
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+<Warning>
+  Server-side multimodal support is a work in progress. Some models or features may not behave correctly when accessed via the HTTP API. For reliable multimodal inference, prefer `llama-mtmd-cli` until the server integration stabilizes.
+</Warning>
+
+## More examples
+
+The [examples/mtmd/](https://github.com/ikawrakow/ik_llama.cpp/tree/main/examples/mtmd) directory contains model-specific documentation, test images, and scripts. See `tests.sh` for sample invocations covering a range of models and input types.

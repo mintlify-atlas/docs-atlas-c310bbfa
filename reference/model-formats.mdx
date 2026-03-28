@@ -1,0 +1,56 @@
+---
+title: "Model formats and conversion"
+description: "GGUF format, model splits, and HuggingFace conversion"
+---
+
+## GGUF format
+
+ik_llama.cpp uses the **GGUF** (GPT-Generated Unified Format) binary format. Every model file stores tensor data alongside metadata such as the architecture, tokenizer, and quantization type.
+
+Key metadata fields logged at startup include tensor types (`f32`, `q6_K`, etc.) and KV cache sizes. Check these when diagnosing memory or quality issues.
+
+## Converting from HuggingFace
+
+Convert a HuggingFace model to GGUF with the bundled `convert_hf_to_gguf.py` script:
+
+```bash
+python3 convert_hf_to_gguf.py /path/to/hf-model --outfile model-bf16.gguf
+```
+
+The script supports legacy quant conversion schemes. Pass `--help` for the full option list.
+
+## Inspecting a GGUF file
+
+Use `gguf_dump.py` to view all tensor names, shapes, and metadata:
+
+```bash
+python3 gguf-py/scripts/gguf_dump.py /models/model.gguf
+```
+
+You can also open a GGUF file directly in a browser on HuggingFace — scroll to the Tensors table to inspect layer counts and shapes without downloading the file.
+
+## Splitting large models
+
+Split an oversized GGUF into parts for easier storage or upload:
+
+```bash
+llama-gguf-split --split --split-max-size 1G --no-tensor-first-split \
+  /models/model.gguf /models/parts/model.gguf
+```
+
+When loading a split model, pass only the **first part** to `--model`. ik_llama.cpp discovers the remaining parts automatically.
+
+## Checking imatrix metadata
+
+An importance matrix (imatrix) calibrates quantization to reduce perceptual loss. To verify whether a GGUF was quantized with an imatrix, inspect its metadata:
+
+```bash
+python3 gguf-py/scripts/gguf_dump.py /models/model.gguf | grep imatrix
+```
+
+Look for `quantize.imatrix.*` fields. Their presence indicates the file was built with imatrix data. For quantization types below `Q6_0`, imatrix use is strongly recommended.
+
+<Note>
+  To convert a GGUF imatrix file to the older `.dat` format expected by some
+  tools, use `convert_imatrix_gguf_to_dat.py`.
+</Note>

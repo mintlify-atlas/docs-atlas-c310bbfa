@@ -1,23 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "ik_llama.cpp",
+  "projectType": "ai-ml",
+  "projectName": "ik_llama.cpp",
+  "projectDescription": "A high-performance fork of llama.cpp featuring SOTA quantization types, FlashMLA, fused MoE operations, and significantly improved CPU/GPU inference speed for local LLM deployment.",
   "theme": "aspen",
-  "colors": {
-    "primary": "#94cb04",
-    "light": "#545454"
-  },
-  "favicon": "https://media.brand.dev/288cc7c4-5cef-4376-950b-bdf0083eedae.png",
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/ikawrakow/ik_llama.cpp"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/ikawrakow/ik_llama.cpp"
-    }
-  },
+  "primaryColor": "#94cb04",
+  "lightColor": "#545454",
+  "darkColor": null,
   "navigation": {
     "tabs": [
       {
@@ -89,5 +77,33 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "SOTA quantization types: IQK quants (IQ2_K through IQ6_K), Trellis quants (IQ1_KT–IQ4_KT), and MXFP4",
+    "FlashMLA: optimized Multi-Head Latent Attention for DeepSeek models on CPU and CUDA",
+    "Fused MoE (Mixture of Experts) operations for faster inference on sparse models",
+    "Tensor overrides for fine-grained GPU/CPU hybrid offloading",
+    "OpenAI-compatible REST API server with WebUI",
+    "Speculative decoding (draft model, n-gram, ngram-mod)",
+    "Function calling / tool use support via Jinja templates",
+    "Multi-GPU split mode 'graph' for dense and MoE models",
+    "Smart Expert Reduction (SER) for faster DeepSeek inference",
+    "First-class BitNet b1.58 model support"
+  ],
+  "publicApiSurface": [
+    "llama-server (OpenAI-compatible HTTP REST API)",
+    "llama-cli (interactive CLI inference)",
+    "llama-quantize (model quantization tool)",
+    "llama-imatrix (importance matrix generation)",
+    "llama-bench (benchmarking)",
+    "llama-sweep-bench (sweep benchmarking)",
+    "llama-mtmd-cli (multimodal CLI)",
+    "convert_hf_to_gguf.py (HuggingFace to GGUF conversion)",
+    "POST /v1/chat/completions",
+    "POST /v1/completions",
+    "POST /v1/embeddings",
+    "GET /health",
+    "GET /props",
+    "POST /v1/responses"
+  ]
 }

@@ -1,0 +1,147 @@
+---
+title: "Android deployment"
+description: "Run ik_llama.cpp on Android using Termux or the Android NDK"
+---
+
+<Note>
+  `ik_llama.cpp` builds and runs successfully on Android. The ARM NEON kernels used on `arm64-v8a` devices are the same well-optimised kernels used on Linux ARM64, so on-device inference is practical on modern Android phones.
+</Note>
+
+There are two approaches: building directly on the device inside Termux, or cross-compiling on a desktop machine with the Android NDK and pushing the binaries via `adb`.
+
+## Method 1: Build in Termux
+
+[Termux](https://github.com/termux/termux-app#installation) gives you a Linux-like environment on Android without root. Install it from **F-Droid** or the **GitHub releases page** (the Play Store version is outdated and no longer receives updates).
+
+<Steps>
+  <Step title="Install Termux and update packages">
+    Open Termux and run:
+
+    ```bash
+    apt update && apt upgrade -y
+    apt install git make cmake
+    ```
+  </Step>
+
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/ikawrakow/ik_llama.cpp
+    cd ik_llama.cpp
+    ```
+  </Step>
+
+  <Step title="Build">
+    Follow the standard Linux build instructions. The ARM NEON backend is detected and compiled automatically on `arm64` devices:
+
+    ```bash
+    cmake -B build -DGGML_NATIVE=ON
+    cmake --build build --config Release -j$(nproc)
+    ```
+  </Step>
+
+  <Step title="Move your model to the home directory">
+    Model files on the SD card or `Downloads` folder are accessed over FUSE, which is significantly slower than the internal storage Termux uses for `~/`. Move the model before running inference:
+
+    ```bash
+    cd ~/storage/downloads
+    mv model.gguf ~/
+    ```
+  </Step>
+
+  <Step title="Run inference">
+    ```bash
+    cd ~/ik_llama.cpp/build/bin
+    ./llama-cli -m ~/model.gguf -n 128 -cml
+    ```
+  </Step>
+</Steps>
+
+## Method 2: Cross-compile with the Android NDK
+
+Cross-compiling on a desktop machine is faster than building in Termux and produces the same binaries. You then push them to the device with `adb`.
+
+<Steps>
+  <Step title="Obtain the Android NDK">
+    Download the [Android NDK](https://developer.android.com/ndk) and note the path. The steps below use `$NDK` to refer to it.
+  </Step>
+
+  <Step title="Configure and build">
+    Run the following on your desktop (Linux or macOS):
+
+    ```bash
+    mkdir build-android
+    cd build-android
+    export NDK=<your_ndk_directory>
+
+    cmake \
+      -DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake \
+      -DANDROID_ABI=arm64-v8a \
+      -DANDROID_PLATFORM=android-23 \
+      -DCMAKE_C_FLAGS="-march=armv8.4a+dotprod" \
+      ..
+
+    make -j$(nproc)
+    ```
+
+    The `-march=armv8.4a+dotprod` flag enables the dot-product instructions available on most ARMv8.4+ SoCs (Snapdragon 865 and newer). Omit it for broader compatibility.
+  </Step>
+
+  <Step title="Install Termux on the device">
+    Install Termux from F-Droid or GitHub, then run `termux-setup-storage` in Termux to grant storage access. On Android 11 and later, run the command twice.
+  </Step>
+
+  <Step title="Push binaries to the device">
+    Copy the compiled binaries to the device SD card with `adb push`, then move them inside Termux:
+
+    ```bash
+    # On desktop — push binaries to SD card
+    adb push build-android/bin /sdcard/llama.cpp/bin
+
+    # In Termux — copy to a writable path and make executable
+    cp -r /sdcard/llama.cpp/bin /data/data/com.termux/files/home/
+    cd /data/data/com.termux/files/home/bin
+    chmod +x ./*
+    ```
+  </Step>
+
+  <Step title="Copy your model">
+    Push the model to the SD card first, then move it to internal storage for best performance:
+
+    ```bash
+    # On desktop
+    adb push llama-2-7b-chat.Q4_K_M.gguf /sdcard/llama.cpp/
+
+    # In Termux
+    mkdir -p /data/data/com.termux/files/home/model
+    mv /sdcard/llama.cpp/llama-2-7b-chat.Q4_K_M.gguf \
+       /data/data/com.termux/files/home/model/
+    ```
+  </Step>
+
+  <Step title="Run">
+    ```bash
+    cd /data/data/com.termux/files/home/bin
+    ./llama-cli -m ../model/llama-2-7b-chat.Q4_K_M.gguf -n 128 -cml
+    ```
+  </Step>
+</Steps>
+
+## Performance tips
+
+<AccordionGroup>
+  <Accordion title="Store models in ~/  (internal storage)">
+    Android's SD card and shared storage (`/sdcard/`) are mounted over FUSE, which adds significant overhead for the large sequential reads that model inference requires. Always move `.gguf` files to `~/` (i.e. `/data/data/com.termux/files/home/`) before running inference.
+  </Accordion>
+
+  <Accordion title="Use the ARM NEON backend">
+    On `arm64-v8a` devices the NEON backend is compiled in by default. No extra flags are needed. The dot-product extension (`+dotprod`) further accelerates quantised matrix operations on ARMv8.4+ SoCs — enable it at build time with `-DCMAKE_C_FLAGS="-march=armv8.4a+dotprod"`.
+  </Accordion>
+
+  <Accordion title="Match thread count to physical cores">
+    Set `-t` to the number of physical CPU cores, not the total thread count. On a phone with a mix of performance and efficiency cores, start with the number of performance cores and adjust from there. See the [performance tips](/deployment/performance-tips) page for a systematic approach.
+  </Accordion>
+
+  <Accordion title="Use a quantised model">
+    On-device VRAM is shared with system RAM. Use a quantised model (`Q4_K_M` or `IQ4_XS` are good starting points) to keep memory use low and inference speed reasonable.
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,240 @@
+---
+title: "Hybrid CPU/GPU inference"
+description: "Run large models that don't fit in VRAM using RAM+VRAM hybrid offloading"
+---
+
+Hybrid inference lets you run models that are too large to fit entirely in GPU VRAM by keeping some weights in system RAM and the rest in VRAM. The key insight for MoE (Mixture-of-Experts) models is that expert weights are activated only 2–5% of the time — making them ideal candidates to stay in RAM while attention and non-expert layers live in the faster VRAM.
+
+## The concept
+
+In a MoE model such as DeepSeek-V3 or Qwen3-30B-A3B, the total weight file is large, but each token only activates a small fraction of the expert tensors. The strategy is:
+
+- **VRAM**: attention layers, embedding, normalization, shared experts, and any experts that fit
+- **RAM**: the sparse `ffn_*_exps` expert tensors that are rarely activated
+
+ik_llama.cpp is specifically engineered for this pattern with tensor-level override support and dedicated MoE offload flags.
+
+## Step-by-step workflow
+
+<Steps>
+  <Step title="Find the model size">
+    Check the total GGUF file size on disk. This is the minimum RAM + VRAM needed.
+
+    ```bash
+    ls -lh /models/model.gguf
+    # or for split models:
+    ls -lh /models/model-*.gguf
+    ```
+
+    Identify the number of layers and tensor names:
+
+    ```bash
+    python3 gguf-py/scripts/gguf_dump.py /models/model.gguf | head -80
+    ```
+
+    You can also browse the model on HuggingFace — click any `.gguf` file and scroll to the Tensors table.
+  </Step>
+
+  <Step title="Check available VRAM">
+    ```bash
+    nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv
+    ```
+
+    Subtract ~500–1000 MiB for OS/driver overhead. The remainder is usable VRAM for model weights and KV cache.
+  </Step>
+
+  <Step title="Decide your strategy">
+    | Situation | Recommended approach |
+    | --- | --- |
+    | Model fits entirely in VRAM | `-ngl 999` (full GPU) |
+    | MoE model, experts don't fit | `--cpu-moe` or `-ot "\.ffn_.*_exps\.=CPU"` |
+    | Some MoE layers fit, others don't | `--n-cpu-moe N` or fine-grained `-ot` regex |
+    | Dense model, partial fit | `-ngl N` for N layers |
+    | Very limited VRAM | `-ngl 0 --no-kv-offload` (CPU only) |
+
+    Also consider quantizing the KV cache to reclaim VRAM:
+
+    ```bash
+    -ctk q8_0 -ctv q8_0
+    ```
+  </Step>
+
+  <Step title="Run the server">
+    Choose the configuration that matches your hardware and model. See the examples below.
+  </Step>
+</Steps>
+
+## MoE offload options
+
+### Simple: --cpu-moe
+
+Keeps **all** MoE expert weights in RAM with a single flag. The easiest starting point:
+
+```bash
+llama-server \
+  -m /models/DeepSeek-V3-IQ4_NL.gguf \
+  -ngl 999 \
+  --cpu-moe \
+  -fa \
+  --ctx-size 4096
+```
+
+### Partial: --n-cpu-moe N
+
+Keeps MoE weights for the **first N layers** in RAM, allowing the rest to live in VRAM. Use this when you have enough VRAM for some but not all expert layers:
+
+```bash
+llama-server \
+  -m /models/model.gguf \
+  -ngl 999 \
+  --n-cpu-moe 60 \
+  -fa
+```
+
+### Fine-grained: -ot regex
+
+`-ot` / `--override-tensor` matches tensor names by regex and assigns them to a device. This is the most powerful option, letting you target specific layers and tensor types.
+
+**Pattern explanation:**
+
+```bash
+-ngl 999 -ot "blk.(?:[0-9]|[1-7][0-9]|[8][0-7]).ffn._exps.=CPU"
+```
+
+| Part | Meaning |
+| --- | --- |
+| `blk.` | Matches block (layer) prefix |
+| `(?:[0-9]\|[1-7][0-9]\|[8][0-7])` | Layers 0–87 (single digit, 10–79, 80–87) |
+| `.ffn._exps.` | Any tensor with `ffn` and `_exps` in the name (up/gate/down experts) |
+| `=CPU` | Place these tensors on CPU |
+
+This leaves experts from layers 88 onward in VRAM (for models with ~94 layers, those later-layer experts can fit).
+
+**Simpler pattern for any MoE model:**
+
+```bash
+-ngl 999 -ot "\.ffn_.*_exps\.=CPU"
+```
+
+This moves **all** expert tensors to CPU regardless of layer number.
+
+<Tip>
+  For models with shared experts (e.g., `shexp` tensors in GPT-OSS or GLM-5), put those in VRAM — they are always active and benefit from GPU speed. Check tensor names with `gguf_dump.py` to identify them, then exclude them from your CPU pattern.
+</Tip>
+
+<Tip>
+  For GLM-5 and similar models, the first few layers (`blk.0`, `blk.1`, `blk.2`) have dense FFN (no `_exps`), while layers from `blk.3` onward have MoE experts. Dense layers should always stay in VRAM.
+</Tip>
+
+## KV cache strategies for limited VRAM
+
+The KV cache size scales with context length. At long contexts it can consume several GiB of VRAM.
+
+### Quantize the KV cache
+
+Reduce KV cache VRAM usage by quantizing K and V from f16:
+
+```bash
+-ctk q8_0 -ctv q8_0
+```
+
+Example impact on a small model at 1024 context:
+
+```
+# Default f16:
+llama_kv_cache_init: CPU KV buffer size = 3584.00 MiB
+
+# With q8_0:
+llama_kv_cache_init: CPU KV buffer size =   59.50 MiB
+```
+
+Available KV quantization types (build with `-DGGML_IQK_FA_ALL_QUANTS=ON` for more):
+
+| Type | Notes |
+| --- | --- |
+| `f16` | Default. Full quality. |
+| `q8_0` | Half the size, minimal quality loss. Best starting point. |
+| `q8_KV` | Fast 8-bit KV type specific to ik_llama.cpp. |
+| `q6_0` | Slightly smaller, still good quality. |
+| `bf16` | Available on CPUs with native BF16 support. |
+
+<Info>
+  K-cache is more sensitive than V-cache. If you use different quantization levels, use a higher quality for K: `-ctk q8_0 -ctv q6_0`.
+</Info>
+
+Use `--k-cache-hadamard` with heavily quantized KV caches (below Q6_0) to improve output quality:
+
+```bash
+-ctk q4_0 -ctv q4_0 --k-cache-hadamard
+```
+
+### Keep KV cache in RAM
+
+If VRAM is very tight, you can keep the entire KV cache in system RAM:
+
+```bash
+--no-kv-offload
+```
+
+This reduces prompt processing speed but frees VRAM for model weights.
+
+## Smart Expert Reduction (SER)
+
+SER reduces the number of active experts below the model default, trading output quality for speed:
+
+```bash
+# Use 6 experts instead of model default (e.g. 8)
+-ser 1,6
+
+# Dynamic reduction: keep experts with confidence above threshold t
+-ser Kmin,t
+```
+
+This is equivalent to REAP from the command line. Useful when you need more speed and can accept a slight quality tradeoff.
+
+## Quantization choices
+
+Smaller quantizations reduce total model size, making more of the model fit in VRAM:
+
+| Quant | Notes |
+| --- | --- |
+| `BF16` | Too large for most setups. Use only for reference. |
+| `Q8_0` | Near-BF16 quality at half the size. |
+| `Q6_0` / `IQ6_K` | Minimal quality loss vs Q8_0. |
+| `IQ5_K` | Close to Q8_0 quality, significantly smaller. |
+| `IQ4_XS`, `IQ4_NL` | Minimal loss. Good for large models. |
+| `IQ4_KS`, `IQ4_KSS` | ik_llama.cpp exclusive, excellent quality/size ratio. |
+| `IQ3_K` | Usable quality; imatrix strongly recommended. |
+| `IQ2_K`, `IQ2_KS` | Very small; noticeable quality loss without imatrix. |
+
+For any quant below Q6_0, use an imatrix for best results. Check the model metadata for `quantize.imatrix.*` fields to see if the file was already quantized with one.
+
+## Practical example: Qwen3-30B-A3B on Zen4 CPU + single GPU
+
+This is a real-world configuration for running Qwen3-30B-A3B (30B total, 3B active) with experts in RAM and attention layers in VRAM:
+
+```bash
+llama-server \
+  -m /models/Qwen3-30B-A3B-IQ4_NL.gguf \
+  -ngl 999 \
+  -ot "\.ffn_.*_exps\.=CPU" \
+  -fa \
+  -ctk q8_0 \
+  -ctv q8_0 \
+  --ctx-size 8192 \
+  -t 8 \
+  -tb 2
+```
+
+What each flag does:
+- `-ngl 999`: load all non-expert layers to VRAM
+- `-ot "\.ffn_.*_exps\.=CPU"`: keep all expert weight tensors in RAM
+- `-fa`: Flash Attention (reduces VRAM usage and speeds up PP)
+- `-ctk q8_0 -ctv q8_0`: quantize KV cache to save VRAM
+- `-t 8`: 8 CPU threads for generation (match physical core count)
+- `-tb 2`: fewer threads for batch processing when GPU handles most of it
+
+## Related pages
+
+- [GPU offloading](/inference/gpu-offload) — Full GPU offload parameter reference
+- [Parameters reference](/inference/parameters) — Complete CLI reference

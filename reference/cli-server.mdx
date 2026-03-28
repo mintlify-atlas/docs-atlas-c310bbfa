@@ -1,0 +1,54 @@
+---
+title: "llama-server reference"
+description: "CLI flags for the llama-server inference server"
+---
+
+`llama-server` is the primary inference server. It exposes an OpenAI-compatible HTTP API and an integrated web UI.
+
+**Example launch command**
+
+```bash
+./build/bin/llama-server \
+  --model /models/Qwen_Qwen3-30B-A3B-IQ4_NL.gguf \
+  --host 0.0.0.0 --port 8080 \
+  --ctx-size 8192 \
+  -ngl 999 --flash-attn \
+  --parallel 2 --api-key mysecret
+```
+
+<AccordionGroup>
+  <Accordion title="Basic">
+    | Flag | Default | Description |
+    | --- | --- | --- |
+    | `-m, --model FNAME` | required | Path to the `.gguf` model file. |
+    | `--host HOST` | `127.0.0.1` | IP address to listen on. Use `0.0.0.0` for LAN/external access. |
+    | `--port PORT` | `8080` | TCP port to listen on. |
+    | `-c, --ctx-size N` | from model | Context window size in tokens. Shared across parallel slots — increase with `--parallel`. |
+  </Accordion>
+
+  <Accordion title="Performance">
+    | Flag | Default | Description |
+    | --- | --- | --- |
+    | `-fa, --flash-attn` | on | Enable Flash Attention. Improves throughput and reduces KV cache memory. |
+    | `-ngl, --gpu-layers N` | 0 | Number of model layers to offload to VRAM. Use `999` to offload everything. |
+    | `-mla, --mla-use N` | 3 | MLA mode for DeepSeek and other MLA-based models. `3` = FlashMLA (fastest). |
+    | `--fused-moe` | enabled | Fuse `ffn_up` and `ffn_gate` ops for faster MoE inference. Disable with `--no-fused-moe`. |
+  </Accordion>
+
+  <Accordion title="Server">
+    | Flag | Default | Description |
+    | --- | --- | --- |
+    | `--webui NAME` | `auto` | Web UI to serve. Options: `auto`, `llamacpp`, `none`. |
+    | `--api-key KEY` | none | Require this key in the `Authorization` header for all requests. |
+    | `-np, --parallel N` | `1` | Number of parallel decode slots. `--ctx-size` is divided across all slots. |
+  </Accordion>
+
+  <Accordion title="Sampling">
+    | Flag | Default | Description |
+    | --- | --- | --- |
+    | `--temp N` | `0.8` | Sampling temperature. Lower = more deterministic. |
+    | `--top-k N` | `40` | Keep only the top-K most likely tokens before sampling. |
+    | `--top-p N` | `0.95` | Nucleus sampling threshold. |
+    | `--min-p N` | `0.05` | Minimum probability relative to the top token. Useful alternative to `top-p`. |
+  </Accordion>
+</AccordionGroup>

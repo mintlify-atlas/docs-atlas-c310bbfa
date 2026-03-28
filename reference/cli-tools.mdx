@@ -1,0 +1,105 @@
+---
+title: "CLI tools reference"
+description: "llama-cli, llama-quantize, llama-imatrix, llama-bench, llama-sweep-bench"
+---
+
+<AccordionGroup>
+  <Accordion title="llama-cli">
+    Interactive command-line inference. Accepts the same model and context flags as `llama-server`.
+
+    ```bash
+    ./build/bin/llama-cli \
+      --model /models/model.gguf \
+      --ctx-size 4096 -ngl 999 \
+      --flash-attn -i
+    ```
+
+    Pass `-i` for interactive (chat) mode. Use `--completion-bash` to generate shell tab-completion:
+
+    ```bash
+    build/bin/llama-cli --completion-bash > ~/.llama-completion.bash
+    source ~/.llama-completion.bash
+    ```
+  </Accordion>
+
+  <Accordion title="llama-quantize">
+    Quantize a full-precision GGUF to a smaller quantization type.
+
+    ```bash
+    llama-quantize \
+      --imatrix /models/model.imatrix \
+      /models/model-bf16.gguf \
+      /models/model-IQ4_NL.gguf \
+      IQ4_NL
+    ```
+
+    | Flag | Description |
+    | --- | --- |
+    | `--imatrix FILE` | Apply an importance matrix to improve quantization quality. Recommended for types below `Q6_0`. |
+    | `--custom-q "regex=type,..."` | Mix quantization types per tensor using regular expressions. |
+    | `--dry-run` | Print tensor types and output sizes without running quantization. Use to preview `--custom-q` mixes before committing. |
+    | `--partial-requant` | Quantize only missing split files in a destination directory. |
+  </Accordion>
+
+  <Accordion title="llama-imatrix">
+    Generate an importance matrix from a calibration dataset. The output `.imatrix` file is passed to `llama-quantize`.
+
+    ```bash
+    llama-imatrix \
+      -m /models/model-bf16.gguf \
+      -f /models/calibration_data_v5_rc.txt \
+      -o /models/model.imatrix
+    ```
+
+    | Flag | Description |
+    | --- | --- |
+    | `--layer-similarity` / `-lsim` | Collect cosine-similarity statistics on layer activations. |
+    | `--hide-imatrix` | Anonymize the output by storing `top_secret` in the file name and zeroing calibration metadata. |
+
+    <Note>
+      Use `convert_imatrix_gguf_to_dat.py` to convert GGUF imatrix files to the
+      legacy `.dat` format if needed.
+    </Note>
+  </Accordion>
+
+  <Accordion title="llama-bench">
+    Standard benchmark utility for measuring prompt processing (PP) and token generation (TG) throughput.
+
+    ```bash
+    llama-bench -tgb 4,16 -p 512 -n 128 -m /models/model.gguf
+    ```
+
+    | Flag | Description |
+    | --- | --- |
+    | `-tgb, --threads-gen-batch N,M` | Test different thread counts for generation vs. batch processing in a single run. |
+  </Accordion>
+
+  <Accordion title="llama-sweep-bench">
+    Extended benchmark that runs a series of PP batches followed by TG without clearing the KV cache. The `N_KV` column in the output shows the KV cache occupancy at each measurement point.
+
+    Accepts the same model/context flags as `llama-server`.
+
+    ```bash
+    llama-sweep-bench \
+      -m /models/model.gguf \
+      -c 12288 -ub 512 \
+      -rtr -fa -ctk q8_0 -ctv q8_0
+    ```
+
+    | Flag | Description |
+    | --- | --- |
+    | `-nrep N, --n-repetitions N` | Number of repetitions at zero context before the sweep begins. |
+    | `-n N` | Number of TG tokens per step. Defaults to `ubatch / 4` if not set. |
+  </Accordion>
+
+  <Accordion title="convert_hf_to_gguf.py">
+    Convert a HuggingFace model checkpoint to GGUF format.
+
+    ```bash
+    python3 convert_hf_to_gguf.py /path/to/hf-model \
+      --outfile /models/model-bf16.gguf
+    ```
+
+    Supports legacy quantization conversion schemes. Run with `--help` for all options. For split output models, combine with `llama-gguf-split` to produce multi-part GGUFs.
+  </Accordion>
+</AccordionGroup>

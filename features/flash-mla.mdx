@@ -1,0 +1,100 @@
+---
+title: "FlashMLA"
+description: "Optimized Multi-Head Latent Attention for DeepSeek models on CPU and CUDA"
+---
+
+## What is MLA?
+
+Multi-Head Latent Attention (MLA) is the attention mechanism used in DeepSeek-V2, DeepSeek-V3, DeepSeek-R1, and similar models. Instead of storing full key-value heads in the KV cache, MLA compresses them into a low-rank latent representation. This dramatically reduces the KV cache memory footprint — at the cost of requiring a matrix decomposition step during inference.
+
+`ik_llama.cpp` implements MLA natively and adds a Flash Attention-style kernel on top of it, called **FlashMLA**. The current version, FlashMLA-3, is the recommended implementation and is available for both CPU and CUDA.
+
+## The `-mla` flag
+
+Use `-mla` (or `--mla-use`) to select the MLA implementation:
+
+| Value | Behaviour |
+|-------|-----------|
+| `0` | MLA disabled — standard KV cache |
+| `1` | MLA enabled, original transposed cache |
+| `2` | MLA enabled, non-transposed cache |
+| `3` | FlashMLA-3 — recommended (default) |
+
+The default is `3`. You rarely need to change this unless you are debugging or comparing implementations. For all DeepSeek models, leave it at the default.
+
+## CUDA requirements
+
+FlashMLA on CUDA requires an **Ampere or newer** GPU (compute capability 8.0+, e.g. RTX 30xx, A100, H100). Turing GPUs (RTX 20xx) support the earlier flash attention path for DeepSeek models but not FlashMLA-3.
+
+## Performance
+
+FlashMLA-3 delivers the fastest CPU-only DeepSeek inference currently available. On CUDA, it reduces KV cache memory and improves token generation speed compared to standard MHA by exploiting the compressed latent representation. See the [DeepSeek guide](https://github.com/ikawrakow/ik_llama.cpp/discussions/258) for benchmarks and configuration examples.
+
+## KV cache with MLA
+
+MLA works with quantized KV caches. The recommended cache type is `q8_0`:
+
+```bash
+./build/bin/llama-server \
+  --model DeepSeek-V3-IQ4_KS.gguf \
+  -mla 3 -fa \
+  -ngl 999 \
+  --ctx-size 8192 \
+  -ctk q8_0
+```
+
+For heavily quantized KV caches (below Q6_0), add `--k-cache-hadamard` to apply a Hadamard transform to the K cache before quantization. This typically recovers quality lost at low bit widths:
+
+```bash
+./build/bin/llama-server \
+  --model DeepSeek-V3-IQ4_KS.gguf \
+  -mla 3 -fa \
+  -ngl 999 \
+  --ctx-size 8192 \
+  -ctk q4_0 \
+  --k-cache-hadamard
+```
+
+## Example command
+
+A complete command for running DeepSeek-V3 with FlashMLA on GPU:
+
+```bash
+./build/bin/llama-server \
+  --model DeepSeek-V3-IQ4_KS.gguf \
+  -mla 3 -fa \
+  -ngl 999 \
+  --ctx-size 8192
+```
+
+For CPU-only inference, omit `-ngl`:
+
+```bash
+./build/bin/llama-server \
+  --model DeepSeek-V3-IQ4_KS.gguf \
+  -mla 3 -fa \
+  --ctx-size 8192
+```
+
+## Smart Expert Reduction (SER)
+
+SER lets you reduce the number of active experts in a MoE model at runtime, trading a small amount of quality for faster inference. Use the `-ser Kmin,t` flag:
+
+- `Kmin` — the minimum number of experts to keep active
+- `t` — threshold mode; set to `1` to use a fixed count of exactly `Kmin` experts
+
+**Example:** use 6 experts instead of DeepSeek's default of 8:
+
+```bash
+./build/bin/llama-server \
+  --model DeepSeek-V3-IQ4_KS.gguf \
+  -mla 3 -fa -ngl 999 \
+  --ctx-size 8192 \
+  -ser 6,1
+```
+
+Higher values of `Kmin` preserve more quality; lower values give more speed. Experiment to find the right balance for your workload.
+
+<Tip>
+  For a full walkthrough of running DeepSeek models — including hybrid GPU/CPU setups, tensor overrides, and quantization selection — see the [DeepSeek guide](https://github.com/ikawrakow/ik_llama.cpp/discussions/258) in the repo discussions.
+</Tip>

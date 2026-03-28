@@ -1,97 +1,86 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "ik_llama.cpp"
+description: "A high-performance fork of llama.cpp with SOTA quantization, FlashMLA, fused MoE operations, and best-in-class CPU/GPU inference speed for local LLM deployment."
 ---
 
-## Setting up
+ik_llama.cpp is a fork of [llama.cpp](https://github.com/ggerganov/llama.cpp) focused on pushing the performance envelope for local LLM inference. It delivers new state-of-the-art quantization types, first-class DeepSeek support via FlashMLA, fused Mixture-of-Experts operations, and fine-grained GPU/CPU hybrid offloading — all while maintaining full compatibility with GGUF model files.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Download a model and start the server in minutes — no GPU required.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Building from source" icon="hammer" href="/building">
+    Build with CPU, CUDA, Metal, or ROCm support.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="GPU offloading" icon="microchip" href="/inference/gpu-offload">
+    Maximize performance by offloading layers to one or more GPUs.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Quantization types" icon="layer-group" href="/quantization/overview">
+    Explore IQK, Trellis, and other SOTA quant formats unique to ik_llama.cpp.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Why ik_llama.cpp?
 
-Everything you need to create world-class documentation.
+ik_llama.cpp delivers measurable improvements over mainline llama.cpp across every dimension of local inference:
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
+<CardGroup cols={2}>
+  <Card title="SOTA quantization" icon="layer-group" href="/quantization/iqk-quants">
+    New IQK and Trellis quantization families provide higher quality at lower bit-widths than standard k-quants, enabling larger models to fit in memory without quality loss.
   </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
+  <Card title="FlashMLA for DeepSeek" icon="bolt" href="/features/flash-mla">
+    Optimized Multi-Head Latent Attention kernels for DeepSeek models deliver industry-leading CPU-only and hybrid inference throughput.
   </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
+  <Card title="Hybrid CPU/GPU inference" icon="server" href="/inference/hybrid-cpu-gpu">
+    Tensor overrides and MoE-specific offload controls let you precisely place model weights across VRAM and RAM for maximum efficiency.
   </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
+  <Card title="OpenAI-compatible server" icon="plug" href="/inference/server">
+    Drop-in replacement for OpenAI API with chat completions, embeddings, function calling, and a built-in WebUI.
   </Card>
-</Columns>
+  <Card title="Speculative decoding" icon="forward-fast" href="/features/speculative-decoding">
+    Multiple speculative decoding strategies — draft model, n-gram, and ngram-mod — for faster token generation.
+  </Card>
+  <Card title="Broad model support" icon="cubes" href="/reference/supported-models">
+    Supports DeepSeek, Qwen3, LLaMA-4, Gemma3, GLM-4, BitNet, and dozens more architectures.
+  </Card>
+</CardGroup>
 
-## Need inspiration?
+## Get started
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Steps>
+  <Step title="Clone and build">
+    Clone the repository and build for your platform (CPU or GPU).
+
+    ```bash
+    git clone https://github.com/ikawrakow/ik_llama.cpp
+    cd ik_llama.cpp
+    cmake -B build -DGGML_NATIVE=ON
+    cmake --build build --config Release -j$(nproc)
+    ```
+  </Step>
+  <Step title="Download a model">
+    Download any GGUF model from HuggingFace. IQK quantizations from bartowski or ubergarm are recommended for best quality/size tradeoffs.
+
+    ```bash
+    # Example: Qwen3 0.6B in IQ4_NL format (~400MB)
+    # Download from: https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF
+    ```
+  </Step>
+  <Step title="Start the server">
+    Launch the inference server and open the built-in WebUI in your browser.
+
+    ```bash
+    # CPU inference
+    ./build/bin/llama-server --model /path/to/model.gguf --ctx-size 4096
+
+    # GPU inference (offload all layers)
+    ./build/bin/llama-server --model /path/to/model.gguf --ctx-size 4096 -ngl 999
+    ```
+
+    Open [http://127.0.0.1:8080](http://127.0.0.1:8080) to start chatting.
+  </Step>
+</Steps>
+
+<Note>
+  The fully supported and performant backends are **CPU** (AVX2 or better, ARM NEON or better) and **CUDA**. ROCm, Vulkan, and Metal have limited support.
+</Note>

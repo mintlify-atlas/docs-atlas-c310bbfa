@@ -1,0 +1,194 @@
+---
+title: "Speculative decoding"
+description: "Accelerate token generation with draft models, n-gram caches, and ngram-mod"
+---
+
+Speculative decoding accelerates token generation by predicting multiple tokens ahead of the main model, then verifying them in a single batch. Because batch-processing tokens (as in prompt processing) is faster than generating them sequentially, correct draft predictions result in a net speedup. The higher the acceptance rate, the greater the gain.
+
+`llama-server` supports several speculative decoding implementations. A draft model can also be combined with a draftless implementation — when combined, the draftless type takes precedence.
+
+## Implementations
+
+<Tabs>
+  <Tab title="Draft model">
+    ### Draft model (`draft`)
+
+    A small secondary model (the _draft model_) generates candidate tokens that the main model then verifies in a batch. This is the most widely used speculative decoding approach and works well across all kinds of content.
+
+    **When to use:** general-purpose acceleration where a suitable small draft model exists for your target model family.
+
+    ```bash
+    llama-server \
+      --model main-model.gguf \
+      --model-draft draft-model.gguf \
+      --draft-max 16
+    ```
+
+    Key flags:
+    - `--model-draft` — path to the draft model GGUF
+    - `--draft-max` / `--draft` — maximum tokens to draft per step (default: 16)
+    - `--draft-min` — minimum draft length before the main model verifies
+    - `--draft-p-min` — minimum probability threshold for greedy draft selection (default: 0.8)
+  </Tab>
+
+  <Tab title="ngram-simple">
+    ### n-gram simple (`ngram-simple`)
+
+    Searches the token history for the last occurrence of the current n-gram and uses the `m` tokens that follow it as the draft. No extra model is needed — drafts are drawn entirely from text the model has already generated.
+
+    **When to use:** rewriting or editing source code or structured text with repetitive patterns.
+
+    ```bash
+    llama-server \
+      --model main-model.gguf \
+      --spec-type ngram-simple \
+      --draft-max 64
+    ```
+
+    Key flags:
+    - `--spec-ngram-size-n N` — length of the lookup n-gram to match (default: 12)
+    - `--spec-ngram-size-m M` — length of the draft to generate on a match (default: 48)
+  </Tab>
+
+  <Tab title="ngram-map-k">
+    ### n-gram map key (`ngram-map-k`)
+
+    Maintains an internal hash map of n-grams seen in the current context window. When the current n-gram has been consistently followed by the same `m` tokens, those tokens are used as the draft. The `--spec-ngram-min-hits` parameter controls how many times a pattern must appear before it is trusted.
+
+    Accepted token counts are tracked per n-gram, giving the implementation a sense of which patterns are reliable.
+
+    **When to use:** workloads with longer, more stable repetitions (e.g. code refactoring with consistent idioms).
+
+    ```bash
+    llama-server \
+      --model main-model.gguf \
+      --spec-type ngram-map-k \
+      --draft-max 64
+    ```
+
+    Key flags:
+    - `--spec-ngram-size-n N` — lookup n-gram length (default: 12)
+    - `--spec-ngram-size-m M` — draft m-gram length (default: 48)
+    - `--spec-ngram-min-hits H` — minimum occurrences before a pattern is used as a draft (default: 1)
+  </Tab>
+
+  <Tab title="ngram-map-k4v">
+    ### n-gram map key-4-values (`ngram-map-k4v`) — experimental
+
+    An experimental extension of `ngram-map-k` that tracks up to four distinct m-gram values per key n-gram. An internal frequency counter picks the most dominant value. If one m-gram is significantly more common than the others, it is used as the draft.
+
+    **When to use:** contexts with many longer repetitions where you want more drafting candidates per key.
+
+    ```bash
+    llama-server \
+      --model main-model.gguf \
+      --spec-type ngram-map-k4v \
+      --spec-ngram-size-n 8 \
+      --spec-ngram-size-m 8 \
+      --spec-ngram-min-hits 2 \
+      --draft-max 64
+    ```
+  </Tab>
+
+  <Tab title="ngram-mod">
+    ### n-gram mod (`ngram-mod`)
+
+    Uses a rolling LCG hash over the last `n` tokens to index into a fixed-size token pool. Each hash entry stores the single most recently observed next token. During speculation, the rolling hash is recomputed iteratively to produce a variable-length draft.
+
+    Characteristics:
+    - Lightweight (~16 MB memory footprint)
+    - Constant memory and O(1) complexity regardless of context length
+    - Variable draft length — `m` is not fixed
+    - The hash pool is shared across all server slots, so different concurrent requests benefit from each other's history
+
+    **When to use:** iterative text editing (e.g. [llama.vim](https://github.com/ggml-org/llama.vim)), reasoning models that repeat their thinking in the final answer, or summarization tasks.
+
+    <Note>
+      Small values of `n` are not recommended — they produce too many hash collisions. MoE models benefit from long draft windows; dense models can use smaller values.
+    </Note>
+
+    ```bash
+    llama-server \
+      --model main-model.gguf \
+      --spec-type ngram-mod \
+      --spec-ngram-size-n 24 \
+      --draft-min 48 \
+      --draft-max 64
+    ```
+  </Tab>
+
+  <Tab title="ngram-cache">
+    ### n-gram cache (`ngram-cache`)
+
+    Maintains statistics about short n-gram sequences observed during generation. Drafts are computed from the probabilities derived from these statistics. External statistics files can be loaded to seed the cache with prior knowledge for improved first-token acceptance.
+
+    ```bash
+    llama-server \
+      --model main-model.gguf \
+      --spec-type ngram-cache \
+      --draft-max 16
+    ```
+  </Tab>
+</Tabs>
+
+## Key command-line flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--spec-type TYPE` | `none` | Speculative decoding type (see table below) |
+| `--draft-max N` | `16` | Maximum tokens to draft per verification step |
+| `--draft-min N` | `0` | Minimum draft length before the main model verifies |
+| `--draft-p-min P` | `0.8` | Minimum probability threshold for greedy draft selection |
+| `--spec-ngram-size-n N` | `12` | Length of the lookup n-gram |
+| `--spec-ngram-size-m M` | `48` | Length of the draft m-gram |
+| `--spec-ngram-min-hits H` | `1` | Minimum occurrences before a pattern is used as a draft |
+
+### `--spec-type` values
+
+| Value | Description |
+|-------|-------------|
+| `none` | No speculative decoding (default) |
+| `ngram-cache` | N-gram cache with probability statistics |
+| `ngram-simple` | Simple n-gram pattern matching |
+| `ngram-map-k` | N-gram map with key-based hash map |
+| `ngram-map-k4v` | N-gram map with up to four tracked values per key (experimental) |
+| `ngram-mod` | Rolling LCG hash pool, shared across server slots |
+
+## Statistics output
+
+Each speculative decoding implementation prints statistics at the end of each request. Use them to tune your configuration.
+
+**Draft model + ngram-simple combined:**
+
+```
+draft acceptance rate = 0.57576 (  171 accepted /   297 generated)
+statistics ngram_simple: #calls = 15, #gen drafts = 5, #acc drafts = 5, #gen tokens = 187, #acc tokens = 73
+statistics draft: #calls = 10, #gen drafts = 10, #acc drafts = 10, #gen tokens = 110, #acc tokens = 98
+```
+
+**ngram-mod:**
+
+```
+draft acceptance rate = 0.70312 (   90 accepted /   128 generated)
+statistics ngram_mod: #calls = 810, #gen drafts = 15, #acc drafts = 15, #gen tokens = 960, #acc tokens = 730, dur(b,g,a) = 0.149, 0.347, 0.005 ms
+```
+
+**ngram-map-k:**
+
+```
+statistics ngram_map_k: #calls(b,g,a) = 6 1690 26, #gen drafts = 26, #acc drafts = 26, #gen tokens = 1248, #acc tokens = 968, dur(b,g,a) = 2.234, 1.427, 0.016 ms
+```
+
+**Field definitions:**
+
+| Field | Meaning |
+|-------|---------|
+| `draft acceptance rate` | Fraction of draft tokens accepted by the main model |
+| `#calls(b,g,a)` | Number of calls: begin (new prompt), generation, accumulation |
+| `#gen drafts` | Number of draft batches generated |
+| `#acc drafts` | Number of draft batches at least partially accepted |
+| `#gen tokens` | Total tokens generated (including rejected) |
+| `#acc tokens` | Total tokens accepted by the main model |
+| `dur(b,g,a)` | Duration in ms for begin, generation, and accumulation phases |
+
+A high `#acc tokens / #gen tokens` ratio means your draft configuration is well-suited to the content. If the ratio is low, try a different `--spec-type`, adjust `--spec-ngram-size-n`, or reduce `--draft-max`.

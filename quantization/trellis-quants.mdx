@@ -1,0 +1,59 @@
+---
+title: "Trellis quantization"
+description: "IQ1_KT, IQ2_KT, IQ3_KT, IQ4_KT: novel integer trellis-based quantization for extreme compression"
+---
+
+Trellis quants are based on a novel integer trellis rather than the scalar or block-based schemes used by other quant families. The integer trellis formulation enables reasonable CPU performance even at very low bits per weight — an unusual property at these compression levels.
+
+## Available types
+
+| Type | Bits per weight | Notes |
+|---|---|---|
+| `IQ1_KT` | ~1 | Extreme compression; quality highly dependent on model and imatrix |
+| `IQ2_KT` | ~2 | Aggressive compression; practical for very large models |
+| `IQ3_KT` | ~3 | Better quality retention than IQ2_KT at moderate size increase |
+| `IQ4_KT` | ~4 | Closest to standard 4-bit quality within the trellis family |
+
+## Platform support
+
+| Backend | Supported |
+|---|---|
+| CUDA | Yes |
+| Metal | Yes |
+| ARM NEON | Yes |
+| CPU (AVX2) | Yes |
+
+<Note>
+ROCm and Vulkan backends are not actively maintained. See the main README for details.
+</Note>
+
+## When to use trellis quants
+
+Trellis quants are the right choice when memory constraints are severe and other options do not fit:
+
+- Very large models (70B+) where even IQ2_K does not fit in available memory
+- Situations where you need the smallest possible file at a given quality floor
+- Deployments on hardware where 1–2 BPW is the only viable option
+
+For most use cases where memory permits, IQK quants at equivalent BPW will provide better quality. Trellis quants trade some quality headroom for extreme size reduction.
+
+## Tradeoffs vs IQK quants
+
+| | IQK quants | Trellis quants |
+|---|---|---|
+| Quality at same BPW | Higher | Lower |
+| File size at same BPW | Larger | Smaller |
+| CPU performance | Good | Reasonable (novel integer trellis design) |
+| Lowest available BPW | ~2 (IQ2_K) | ~1 (IQ1_KT) |
+
+## Quantizing a model
+
+```bash
+llama-quantize --imatrix model.imatrix model-bf16.gguf output-IQ2_KT.gguf IQ2_KT
+```
+
+<Warning>
+Always use an imatrix with trellis quants. At 1–2 BPW, calibration data has a significant impact on output quality.
+</Warning>
+
+The same `--custom-q` and `--dry-run` options available for IQK quants also work with trellis types. See the [IQK quants page](/quantization/iqk-quants) for usage details.

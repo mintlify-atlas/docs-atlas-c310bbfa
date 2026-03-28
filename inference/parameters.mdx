@@ -1,0 +1,344 @@
+---
+title: "Parameters reference"
+description: "Complete reference for ik_llama.cpp command-line parameters"
+---
+
+Complete reference for `llama-server`, `llama-cli`, `llama-sweep-bench`, `llama-bench`, `llama-imatrix`, and `llama-quantize` parameters. All parameters supported by `llama-server` can also be used with the other tools where applicable.
+
+<AccordionGroup>
+
+  <Accordion title="LLM jargon">
+    Common terms used throughout this documentation and in model descriptions.
+
+    | Term | Meaning |
+    | --- | --- |
+    | LLM / model | Large Language Model trained on vast amounts of text using machine learning. |
+    | Tensors | The foundational building block of a model — a multi-dimensional array of numbers (scalar, vector, matrix, or higher-dimensional). |
+    | Layers | Modular units stacked to form the network, each transforming the input tensors in some way. |
+    | Weights | Numerical values associated with connections between tensors in each layer. |
+    | Activations | Output of a layer after it has performed its computations. |
+    | FA | Flash Attention — an efficient transformer attention algorithm. |
+    | VRAM | Dedicated memory on the GPU. |
+    | Inference | Running a model to generate responses. |
+    | GGUF | The file format used by ik_llama.cpp and llama.cpp. |
+    | Quants | Compressed model formats that reduce precision to save space and improve speed. |
+    | BPW | Bits per weight — measures the compression ratio of a quant. |
+    | imatrix | Importance matrix generated from calibration text; improves quantization quality. |
+    | Model splits | A GGUF file split into multiple parts for easier upload/download. Specify only the first part when loading. |
+    | PP | Prompt processing — encoding the input tokens. |
+    | TG | Token generation — producing the output tokens one by one. |
+    | t/s | Tokens per second — measures PP and TG speed. |
+    | Full GPU | All tensors and computation offloaded to the GPU. |
+    | Hybrid CPU/GPU | Partial offload — some tensors in VRAM, others in RAM. |
+  </Accordion>
+
+  <Accordion title="General parameters">
+    Core parameters for loading and running any model.
+
+    | Parameter | Description | Default | Notes |
+    | --- | --- | --- | --- |
+    | `-h, --help, --usage` | Print usage and exit | — | — |
+    | `--fit` | Automatically fit to available VRAM | off | Loads as many tensors to GPU as VRAM permits. Cannot be used with `--cpu-moe`, `--n-cpu-moe`, or tensor overrides. |
+    | `--fit-margin N` | Safety VRAM margin in MiB when using `--fit` | 1024 | Increase if you get CUDA OOM during model load. |
+    | `-t, --threads N` | Threads for token generation | 4 | Match the number of physical CPU cores. Avoid odd numbers. |
+    | `-tb, --threads-batch N` | Threads for batch/prompt processing | Same as `--threads` | For full GPU offload, use a lower number (e.g. 2). |
+    | `-c, --ctx-size N` | Context size (prompt + generation) | 0 (from model) | Determines KV cache size. With parallel slots, this is split across all slots. |
+    | `-n, --predict N` | Max tokens to generate | -1 (infinity) | `-2` = fill context. Safe to leave at default. |
+    | `-b, --batch-size N` | Logical maximum batch size | 2048 | Higher values may improve t/s on GPU at the cost of memory. |
+    | `-ub, --ubatch-size N` | Physical maximum batch size | 512 | Similar effect to `--batch-size`. |
+    | `--keep N` | Tokens to keep from initial prompt | 0 | `-1` = keep all. |
+    | `--chunks N` | Max chunks to process | -1 (all) | — |
+    | `-fa, --flash-attn` | Enable Flash Attention | on | Improves t/s and reduces memory usage. Use `auto`/`on`/`off`. |
+    | `--no-fa, --no-flash-attn` | Disable Flash Attention | — | Alternative to `-fa off`. |
+    | `-mla, --mla-use` | Enable MLA | 3 | `0`/`1`/`2`/`3`. For DeepSeek and other MLA models. |
+    | `-amb, --attention-max-batch` | Max batch size for attention | 0 | Specifies maximum K*Q size in MB to tolerate. |
+    | `-fmoe, --fused-moe` | Fuse ffn_up and ffn_gate in MoE | — | Speedup for MoE models. |
+    | `--no-fmoe, --no-fused-moe` | Disable fused MoE | Enabled | See `--fused-moe`. |
+    | `-ger, --grouped-expert-routing` | Enable grouped expert routing | Disabled | For BailingMoeV2 architecture (Ling/Ring models). |
+    | `--no-fug, --no-fused-up-gate` | Disable fused up-gate | Enabled | Turns off the up-gate speedup for dense models. |
+    | `--no-mmad, --no-fused-mul-multiadd` | Disable fused mul-multi_add | Enabled | — |
+    | `-gr, --graph-reuse` | Enable graph reuse | Enabled | For models with fast TG (100+ t/s). |
+    | `--no-gr, --no-graph-reuse` | Disable graph reuse | Disabled | — |
+    | `-ser, --smart-expert-reduction` | Expert reduction `Kmin,t` | -1, 0 | Use fewer active experts. `-ser 1,6` uses exactly 6 experts. |
+    | `-mqkv, --merge-qkv` | Merge Q, K, V projections | 0 | Downside: mmap cannot be used. |
+    | `-muge, --merge-up-gate-experts` | Merge ffn_up/gate_exps | 0 | Speedup on some models. |
+    | `-khad, --k-cache-hadamard` | Hadamard transform for K-cache | 0 | May improve quality at low KV quantization levels. |
+    | `-sas, --scheduler_async` | Async evaluation of compute graphs | 0 | — |
+    | `-vq, --validate-quants` | Validate quantized data on load | 0 | Reports NaN tensors in the loaded model. |
+    | `-sp, --special` | Enable special token output | false | — |
+    | `--no-warmup` | Skip empty warmup run | — | — |
+    | `--mlock` | Keep model in RAM (no swap) | — | — |
+    | `--no-mmap` | Disable memory-mapped model loading | — | Slower load but may reduce pageouts. |
+    | `-rtr, --run-time-repack` | Repack tensors to interleaved format | — | ik_llama.cpp exclusive. May improve performance. |
+    | `--ctx-checkpoints N` | Checkpoints per slot | — | For recurrent models (Qwen3-Next, Qwen3.5-MoE). |
+    | `--ctx-checkpoints-interval N` | Min tokens between checkpoints | — | Smaller values = more frequent checkpoints during PP. |
+  </Accordion>
+
+  <Accordion title="Speculative decoding">
+    Speculative decoding accelerates generation by using a fast draft model to predict multiple tokens ahead, which the main model then verifies in a single forward pass.
+
+    | Parameter | Description | Default | Notes |
+    | --- | --- | --- | --- |
+    | `-td, --threads-draft N` | Threads for draft model generation | Same as `--threads` | — |
+    | `-tbd, --threads-batch-draft N` | Threads for draft model batch processing | Same as `--threads-draft` | — |
+    | `-ps, --p-split N` | Speculative decoding split probability | 0.1 | — |
+    | `-cd, --ctx-size-draft N` | Context size for draft model | 0 (from model) | Similar to `--ctx-size` but for the draft model. |
+    | `-ctkd, --cache-type-k-draft TYPE` | KV cache K type for draft model | — | See `-ctk`. |
+    | `-ctvd, --cache-type-v-draft TYPE` | KV cache V type for draft model | — | See `-ctv`. |
+    | `-draft, --draft-params` | Comma-separated draft model parameters | — | — |
+    | `--spec-ngram-size-n N` | ngram lookup size N | 12 | For ngram-simple/ngram-map speculative decoding. |
+    | `--spec-ngram-size-m N` | ngram draft size M | 48 | For ngram-simple/ngram-map speculative decoding. |
+    | `--spec-ngram-min-hits N` | Min hits for ngram-map | 1 | — |
+    | `--spec-type Name` | Speculative decoding type | — | `none`, `ngram-cache`, `ngram-simple`, `ngram-map-k`, `ngram-map-k4v`, `ngram-mod`. |
+    | `-mtp, --multi-token-prediction` | Enable MTP decoding | — | For GLM-4.x MoE models. |
+    | `-no-mtp, --no-multi-token-prediction` | Disable MTP decoding | — | — |
+    | `--draft-max` | Max draft tokens | — | For MTP decoding. |
+    | `--draft-p-min` | Min draft probability | — | For MTP decoding. |
+  </Accordion>
+
+  <Accordion title="Cache prompt to host memory">
+    When a conversation ends, its KV cache is saved to RAM and can be restored when the same or similar prompt is seen again. This greatly reduces prompt processing time when switching between conversations.
+
+    <Warning>
+      If available RAM is very limited, disable this with `-cram 0` to avoid memory swapping.
+    </Warning>
+
+    | Parameter | Description | Default | Notes |
+    | --- | --- | --- | --- |
+    | `-cram, --cache-ram N` | Maximum cache size in MiB | 8192 | `-1` = no limit. `0` = disable. Especially useful for coding agents that re-send similar prompts. |
+    | `-crs, --cache-ram-similarity N` | Similarity threshold to trigger cache reuse | 0.50 | — |
+    | `-cram-n-min, --cache-ram-n-min N` | Min cached tokens to trigger cache reuse | 0 | — |
+  </Accordion>
+
+  <Accordion title="Sampling">
+    Sampling controls how tokens are selected during generation. The default sampler pipeline provides a good balance for most use cases.
+
+    For a detailed overview of sampling techniques, see the [llm_samplers_explained](https://gist.github.com/kalomaze/4473f3f975ff5e5fade06e632498f73e) guide.
+
+    | Parameter | Description | Default | Notes |
+    | --- | --- | --- | --- |
+    | `--samplers SAMPLERS` | Ordered sampler pipeline (semicolon-separated) | `dry;top_k;tfs_z;typical_p;top_p;min_p;xtc;top_n_sigma;temperature;adaptive_p` | Example: `--samplers min_p;temperature` |
+    | `--sampling-seq SEQUENCE` | Shorthand sampler sequence | `dkfypmxntw` | Same as `--samplers` in abbreviated form. |
+    | `--banned-string-file` | File containing banned output strings (one per line) | — | — |
+    | `--banned-n` | Number of tokens banned during rewind | -1 | `-1` = all tokens. |
+  </Accordion>
+
+  <Accordion title="Prompt template">
+    The prompt template controls how chat messages are formatted before being sent to the model. An incorrect template can significantly degrade output quality.
+
+    | Parameter | Description | Default | Notes |
+    | --- | --- | --- | --- |
+    | `--jinja` | Use Jinja template from model metadata | Template from model | Required for function/tool calling. |
+    | `--chat-template JINJA_TEMPLATE` | Override chat template inline | Disabled | Use `--chat-template chatml` as a fallback when no official tool_use template exists. |
+    | `--chat-template-file FILE` | Load chat template from file | — | Useful when the GGUF metadata contains a buggy template — download only the fixed `.jinja` file instead of re-downloading the full model. |
+    | `--reasoning-format FORMAT` | Control reasoning/think tag handling | `none` | `none`: leave thoughts in `message.content`. `deepseek`: move thoughts to `message.reasoning_content`. `deepseek-legacy`: keep tags in content AND populate reasoning_content. |
+    | `--chat-template-kwargs JSON` | Additional params for the Jinja template parser | — | Example: `--chat-template-kwargs '{"reasoning_effort": "medium"}'` |
+    | `--reasoning-budget N` | Max thinking tokens allowed | -1 (unrestricted) | `0` = disable thinking. |
+    | `--reasoning-tokens FORMAT` | Exclude reasoning tokens for slot selection | `auto` | — |
+  </Accordion>
+
+  <Accordion title="Context hacking (KV cache)">
+    The KV cache stores past attention computations to avoid reprocessing tokens. These parameters control where the cache lives and how it is quantized.
+
+    The KV cache is stored on the same device as the associated attention tensors. Quantizing the KV cache can significantly reduce VRAM usage.
+
+    | Parameter | Description | Default | Notes |
+    | --- | --- | --- | --- |
+    | `-dkvc, --dump-kv-cache` | Verbose KV cache debug output | — | — |
+    | `-nkvo, --no-kv-offload` | Keep KV cache on CPU | — | Frees VRAM but reduces prompt processing speed. |
+    | `-ctk, --cache-type-k TYPE` | KV cache data type for K | `f16` | Reduces K size; may slightly affect quality. Requires Flash Attention. |
+    | `-ctv, --cache-type-v TYPE` | KV cache data type for V | `f16` | See `-ctk`. K-cache usually needs higher quality than V-cache. |
+    | `--no-context-shift` | Disable context shift | — | — |
+    | `--context-shift` | Configure context shift | `on` | `auto`/`on`/`off`/`0`/`1`. Slides the KV window when context is full. |
+
+    **KV cache types** (build with `-DGGML_IQK_FA_ALL_QUANTS=ON` for the full list):
+
+    | Type | Notes |
+    | --- | --- |
+    | `f16` | Default. Full precision. |
+    | `q8_0` | Half the size, minimal quality loss. |
+    | `q8_KV` | Fast ik_llama.cpp-specific 8-bit KV type. |
+    | `q6_0` | Good quality/size balance. |
+    | `bf16` | Available on CPUs with native BF16 support. |
+  </Accordion>
+
+  <Accordion title="Parallel processing">
+    Serve multiple users or frontends simultaneously. The WebUI uses parallel slots to allow starting a new chat while another is still generating.
+
+    | Parameter | Description | Default | Notes |
+    | --- | --- | --- | --- |
+    | `-np, --parallel N` | Number of parallel decode slots | 1 | The total `--ctx-size` is divided across all slots. |
+  </Accordion>
+
+  <Accordion title="GPU offload">
+    ik_llama.cpp provides extensive control over what runs on the GPU. For a full guide, see [GPU offloading](/inference/gpu-offload) and [Hybrid CPU/GPU inference](/inference/hybrid-cpu-gpu).
+
+    | Parameter | Description | Default | Notes |
+    | --- | --- | --- | --- |
+    | `-ngl, --gpu-layers N` | Layers to store in VRAM | — | Use `999` to offload everything. For MoE, use more than the model layer count. |
+    | `-ngld, --gpu-layers-draft N` | Layers for draft model in VRAM | — | See `-ngl`. |
+    | `--cpu-moe` | Keep all MoE expert weights in RAM | — | Simple one-flag hybrid mode for MoE. |
+    | `--n-cpu-moe N` | Keep first N layers' MoE weights in RAM | — | Useful when some VRAM is available for experts. |
+    | `-sm, --split-mode MODE` | Multi-GPU split strategy | `none` | `none`: single GPU. `layer`: split by layer. `graph`: split computation graph (best for mixed GPU setups). |
+    | `-ts, --tensor-split SPLIT` | VRAM fraction per GPU (comma-separated) | — | Example: `-ts 3,1` gives 75% to GPU 0, 25% to GPU 1. |
+    | `-dev, --device LIST` | Specific GPU devices to use | — | Example: `-dev CUDA0,CUDA1`. |
+    | `-devd, --device-draft LIST` | GPU devices for draft model | — | — |
+    | `-mg, --main-gpu i` | GPU index for single-GPU mode | — | Used with `-sm none`. |
+    | `-ot, --override-tensor REGEX=DEVICE` | Place tensors by regex | — | Example: `\.ffn_.*_exps\.=CPU`. Can be specified multiple times. |
+    | `-op, --offload-policy a,b` | Per-operation offload control | — | `a` = GGML op enum value, `b` = 0 (CPU) or 1 (GPU). `-op -1,0` disables all GPU offload. |
+    | `-ooae, --offload-only-active-experts` | Offload only activated MoE experts | ON | Reduces RAM→VRAM transfer for sparse models. |
+    | `-no-ooae` | Disable active-expert-only offload | — | May help when large batches activate most experts. |
+    | `--fit` | Auto-fit tensors to available VRAM | off | Cannot be combined with `--cpu-moe`, `--n-cpu-moe`, or `-ot`. |
+    | `--fit-margin N` | VRAM safety margin for `--fit` (MiB) | 1024 | Increase if CUDA OOM occurs during load. |
+    | `-grt, --graph-reduce-type TYPE` | Data type for inter-GPU transfers | `f32` | `q8_0`/`bf16`/`f16`/`f32`. Lower precision = less bandwidth used. |
+    | `--max-gpu N` | Max GPUs per layer with graph split | — | Useful when using all GPUs hurts performance. |
+    | `-cuda, --cuda-params LIST` | CUDA-specific tuning parameters | — | Controls fusion, offload threshold, MMQ-ID threshold. Example: `-cuda graphs=0`. |
+    | `-cuda fa-offset=VALUE` | FP16 precision offset for FA | 0 | Fix FP16 overflow in FA at very long contexts. Value in `[0..3]`. |
+    | `-smgs, --split-mode-graph-scheduling` | Force graph scheduling in split mode | 0 | — |
+  </Accordion>
+
+  <Accordion title="Model options">
+    Parameters for configuring how the model is loaded and how draft models work.
+
+    | Parameter | Description | Default | Notes |
+    | --- | --- | --- | --- |
+    | `-m, --model FNAME` | Path to model GGUF file | `models/$filename` | Required. For split models, specify only the first part. |
+    | `-md, --model-draft FNAME` | Draft model for speculative decoding | unused | — |
+    | `--draft-max, --draft, --draft-n N` | Max draft tokens for speculative decoding | 16 | — |
+    | `--draft-min, --draft-n-min N` | Min draft tokens | — | — |
+    | `--draft-p-min P` | Min speculative decoding probability | 0.8 | — |
+    | `--check-tensors` | Validate tensor data on load | false | — |
+    | `--override-kv KEY=TYPE:VALUE` | Override model metadata | — | Types: `int`, `float`, `bool`, `str`. Example: `--override-kv tokenizer.ggml.add_bos_token=bool:false`. |
+  </Accordion>
+
+  <Accordion title="Server options">
+    Parameters specific to `llama-server`.
+
+    | Parameter | Description | Default | Notes |
+    | --- | --- | --- | --- |
+    | `--host HOST` | IP address to listen on | `127.0.0.1` | Use `0.0.0.0` for network access. Never expose to the internet without authentication. |
+    | `--port PORT` | Port to listen on | `8080` | — |
+    | `--webui NAME` | Which WebUI to serve | `auto` | `none`: disabled. `auto`: default. `llamacpp`: classic llama.cpp UI. |
+    | `--api-key KEY` | API authentication key | none | Clients must supply this via `Authorization: Bearer`. |
+    | `-a, --alias NAME` | Model name alias for the API | none | Useful when clients expect a specific model name. |
+  </Accordion>
+
+  <Accordion title="Other tools">
+    ### sweep-bench
+
+    Benchmarks prompt processing and token generation across a sweep of batch sizes. The KV cache is not cleared between runs, so the `N_KV` column shows how many tokens were in cache.
+
+    ```bash
+    llama-sweep-bench \
+      -m /models/model.gguf \
+      -c 12288 -ub 512 \
+      -rtr -fa \
+      -ctk q8_0 -ctv q8_0
+    ```
+
+    | Parameter | Description | Default |
+    | --- | --- | --- |
+    | `-nrep N, --n-repetitions N` | Number of repetitions at zero context | — |
+    | `-n N` | Number of TG tokens | ubatch/4 |
+
+    ---
+
+    ### llama-bench
+
+    Standard benchmark utility.
+
+    ```bash
+    llama-bench -tgb 4,16 -p 512 -n 128 [other_args]
+    ```
+
+    | Parameter | Description | Default |
+    | --- | --- | --- |
+    | `-tgb, --threads-gen-batch` | Different thread count for generation vs batch processing | — |
+
+    ---
+
+    ### llama-imatrix
+
+    Generate an importance matrix from calibration text. The imatrix improves quantization quality across all quant types.
+
+    ```bash
+    llama-imatrix \
+      -m /models/model-bf16.gguf \
+      -f /data/calibration_data_v5_rc.txt \
+      -o /models/model.imatrix
+    ```
+
+    | Parameter | Description | Default |
+    | --- | --- | --- |
+    | `--layer-similarity, -lsim` | Collect activation change statistics using cosine similarity | — |
+    | `--hide-imatrix` | Anonymize the imatrix data file | — |
+
+    Notes:
+    - Use `convert_imatrix_gguf_to_dat.py` to convert GGUF imatrix files to the format used internally.
+    - imatrix calculation supports models with merged `ffn_up/gate_exps` tensors.
+
+    ---
+
+    ### llama-quantize
+
+    Quantize a BF16 or F16 model to a compressed format.
+
+    ```bash
+    llama-quantize \
+      --imatrix /models/model.imatrix \
+      /models/model-bf16.gguf \
+      /models/model-IQ4_NL.gguf \
+      IQ4_NL
+    ```
+
+    To split the output for easier distribution:
+
+    ```bash
+    llama-gguf-split \
+      --split --split-max-size 1G \
+      --no-tensor-first-split \
+      /models/model-IQ4_NL.gguf \
+      /models/parts/model-IQ4_NL.gguf
+    ```
+
+    | Parameter | Description | Default |
+    | --- | --- | --- |
+    | `--custom-q "regex1=type1,regex2=type2..."` | Custom per-tensor quantization rules using regex | — |
+    | `--dry-run` | Print tensor types and sizes without running quantization | — |
+    | `--partial-requant` | Only quantize missing split files in the destination directory | — |
+  </Accordion>
+
+  <Accordion title="Build arguments">
+    CMake build configuration flags.
+
+    ```bash
+    cmake -B build -DGGML_NATIVE=ON
+    cmake --build build --config Release -j$(nproc)
+    ```
+
+    | Argument | Notes |
+    | --- | --- |
+    | `-DGGML_NATIVE=ON` | Optimize for the host CPU. Turn off when cross-compiling. |
+    | `-DGGML_CUDA=ON` | Build with CUDA support. |
+    | `-DCMAKE_CUDA_ARCHITECTURES=86` | Target a specific CUDA compute capability (e.g. `86` for RTX 3x00). |
+    | `-DGGML_ARCH_FLAGS="-march=armv8.2-a+dotprod+fp16"` | Pass architecture flags directly. |
+    | `-DGGML_RPC=ON` | Build the RPC backend. |
+    | `-DGGML_IQK_FA_ALL_QUANTS=ON` | Enable all KV cache quantization types. |
+    | `-DLLAMA_SERVER_SQLITE3=ON` | Enable SQLite3 support (for mikupad). |
+    | `-DCMAKE_TOOLCHAIN_FILE=[...]` | Specify a CMake toolchain file (e.g. for Windows + SQLite3). |
+    | `-DGGML_NCCL=OFF` | Disable NCCL. |
+  </Accordion>
+
+  <Accordion title="Environment variables">
+    Environment variables that influence runtime behavior.
+
+    ```bash
+    CUDA_VISIBLE_DEVICES=0,2 llama-server -m /models/model-bf16.gguf
+    ```
+
+    | Variable | Notes |
+    | --- | --- |
+    | `CUDA_VISIBLE_DEVICES` | Restrict which GPUs are visible. Example: `0,2` uses the first and third GPU. |
+  </Accordion>
+
+</AccordionGroup>
